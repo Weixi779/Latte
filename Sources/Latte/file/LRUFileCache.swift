@@ -50,6 +50,12 @@ public enum LRUFileCacheError: Error, Equatable, Sendable {
 /// cleaned opportunistically during startup, lookup, and insertion.
 public final class LRUFileCache<Key: Hashable>: AsyncCaching {
     public typealias Value = Data
+
+    /// Produces deterministic key material used to derive a resident filename.
+    ///
+    /// The same logical key must produce identical material across launches.
+    /// The encoder can be called concurrently and must not depend on
+    /// unsynchronized mutable state.
     public typealias StableKeyEncoder = @Sendable (Key) throws -> Data
 
     /// Instance-wide storage and expiration settings.
@@ -73,6 +79,12 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
         public let timeToIdle: Duration?
 
         /// The minimum interval between persistent access-date updates.
+        ///
+        /// In-process TTI and recency are exact. When this value is nonzero,
+        /// the persisted access date can lag by at most one interval. After a
+        /// process restart, TTI can expire up to one interval early and
+        /// restored LRU order can be up to one interval stale. The default
+        /// `.zero` persists every successful access.
         public let accessTimeUpdateInterval: Duration
 
         public init(
@@ -832,6 +844,18 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
     private let stableKeyEncoder: StableKeyEncoder
     private let worker: FileCacheWorker<any FileCacheRuntimeState>
 
+    /// Creates a ready-to-use cache backed by a dedicated directory.
+    ///
+    /// Initialization validates ownership, removes known interrupted staging
+    /// artifacts, rebuilds resident state, removes expired entries, and applies
+    /// capacity trimming before returning.
+    ///
+    /// - Parameters:
+    ///   - directory: A directory used exclusively by one cache instance in
+    ///     one process.
+    ///   - configuration: Instance-wide capacity and expiration settings.
+    ///   - stableKeyEncoder: A deterministic encoder whose output remains
+    ///     stable across process launches.
     public init(
         directory: URL,
         configuration: Configuration,

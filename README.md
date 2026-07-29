@@ -1,19 +1,32 @@
 # Latte
+
 A modern caching infrastructure for Swift across Apple platforms.
 
 Inspired by Caffeine, Moka, Ristretto, and cache2k, but not a port of them.
 
+## requirements
+
 Requires Swift 6 and iOS 16, macOS 13, Mac Catalyst 16, tvOS 16, watchOS 9,
 or visionOS 1.
 
-Latte 的产品方向、已接受边界与演进规则见 [DIRECTION.md](DIRECTION.md)。
+0.1.0 提供 `Caching`、`AsyncCaching` 两种最小缓存协议，以及
+`LRUMemoryCache`、`LRUFileCache` 两个完整实现。具体 Cache 可以拥有不同的
+cost、expiration、容量与持久化能力。
 
-V1 已提供 `Caching`、`AsyncCaching` 两种最小缓存协议，以及
-`LRUMemoryCache`、`LRUFileCache` 两个完整实现。文件 Cache 的设计边界、
-失败语义与实施记录见
-[LRU file cache plan](LRU_FILE_CACHE_PLAN.md)，文件系统假设的验证结果见
-[FileMetadataProbe results](Probes/FileMetadataProbe/RESULTS.md)。具体 Cache
-可以拥有不同的 cost、expiration、容量与持久化能力。
+## installation
+
+Add Latte to a Swift package:
+
+```swift
+dependencies: [
+    .package(
+        url: "https://github.com/Weixi779/Latte.git",
+        from: "0.1.0"
+    ),
+]
+```
+
+## memory cache
 
 ```swift
 import Foundation
@@ -29,6 +42,8 @@ let cache = LRUMemoryCache<String, Data>(
 cache.insert(data, for: key)
 let cached = cache.value(for: key)
 ```
+
+## file cache
 
 文件 Cache 使用调用者提供的稳定 Key material，并在专属目录内管理文件：
 
@@ -52,6 +67,11 @@ let fileCache = try await LRUFileCache<URL>(
 try await fileCache.insert(downloadedData, for: imageURL)
 let cachedData = try await fileCache.value(for: imageURL)
 ```
+
+同一 Key 必须在不同启动中产生相同 material。该 encoder 可能被多个调用任务并发
+执行，不能依赖未同步的可变状态。目录必须专属于一个 Cache 实例和进程。
+
+## composition
 
 Latte 不编排网络请求或图片解码。网络图片层可以通过两个最小协议注入不同的完整
 Cache，并自行决定 raw `Data` 与 decoded image 的生命周期：
@@ -99,7 +119,12 @@ struct NetworkImageCache<Image> {
 需要不同的容量、expiration 或存储语义时，创建并注入另一个 Cache 实例；调用层
 不需要知道具体实现内部的 Policy、文件结构或并发 owner。
 
+## technical documentation
+
+- [Architecture](docs/architecture.md)
+- [File cache](docs/file-cache.md)
+- [Filesystem evidence](probes/file-metadata/results.md)
+- [Benchmarks](benchmarks/README.md)
+
 当前的 LRU、SIEVE、SLRU、W-TinyLFU 与论文原始版 S3-FIFO 命中率实验见
-[Policy hit-rate benchmark](Benchmarks/PolicyHitRateBenchmark/README.md)。
-完整 Cache 的 operation benchmark 入口见
-[Benchmarks](Benchmarks/README.md)。
+[Policy hit-rate benchmark](benchmarks/policy-hit-rate/README.md)。

@@ -1,4 +1,4 @@
-# Policy hit-rate benchmark
+# policy hit-rate benchmark
 
 This executable compares LRU, SIEVE, equal-sized multi-segment SLRU,
 deterministic W-TinyLFU, and the original S3-FIFO policy from
@@ -8,7 +8,7 @@ All policy implementations, reference models, trace parsing, and metric
 collection live in `main.swift`. The executable has no dependency on Latte or
 another cache implementation.
 
-## Metrics
+## metrics
 
 - `objects` capacity mode gives every resident object a cost of one. This is
   the paper's default comparison model.
@@ -59,24 +59,34 @@ configuration of libCacheSim's SLRU test fixture. The primary experiment uses
 the paper's four equal segments. W-TinyLFU is excluded from this claim because
 the libCacheSim fixture has no asserted W-TinyLFU reference result.
 
-## Dataset
+## dataset
 
-Large local traces belong in `Data/`, which is ignored by Git. For the bundled
-10-million-request Twitter cluster 52 excerpt:
+The repository includes `fixtures/smoke.csv`. The default command replays this
+small deterministic fixture at capacities 10, 20, and 40. It verifies parsing,
+self-checks, policy execution, and reporting; it is not research evidence or a
+performance workload.
+
+Large local traces belong in `data/`, which is ignored by Git. Public Twitter
+traces in text and `oracleGeneral` formats are available from the
+[Open-source Cache Dataset][cache-dataset]. After downloading a compressed
+`oracleGeneral` trace:
 
 ```sh
-mkdir -p Benchmarks/PolicyHitRateBenchmark/Data
 zstd -d \
-  Research/libCacheSim-develop/data/twitter_cluster52_10m.csv.zst \
-  -o Benchmarks/PolicyHitRateBenchmark/Data/twitter_cluster52_10m.csv
+  /path/to/twitter-trace.oracleGeneral.zst \
+  -o benchmarks/policy-hit-rate/data/twitter-trace.oracleGeneral.bin
+
+swift run -c release PolicyHitRateBenchmark \
+  --trace benchmarks/policy-hit-rate/data/twitter-trace.oracleGeneral.bin \
+  --format oracle-general
 ```
 
-This excerpt comes from the Twitter cache trace released with CacheLib/OSDI
-2020, but it is only the first 10 million requests, not the complete paper
-dataset. It is useful for development comparisons and must not be presented as
-a reproduction of the S3-FIFO paper's full 6,594-trace evaluation.
+The recorded result below used a separately prepared first-10-million-request
+excerpt of Twitter cluster 52, not the complete dataset. It is useful for
+development comparisons and must not be presented as a reproduction of the
+S3-FIFO paper's full 6,594-trace evaluation.
 
-## Recorded result
+## recorded result
 
 Run on 2026-07-26 with the first 10 million requests of Twitter cluster 52.
 The trace footprint was 897,664 objects and 174,722,570 bytes.
@@ -141,11 +151,14 @@ These are object hit rates under byte capacity. The policy ranking and even
 monotonicity are workload- and partition-sensitive; at 1 GiB W-TinyLFU leads,
 while at 640 MiB SIEVE leads.
 
-## Run
+## run
 
 ```sh
 swift run -c release PolicyHitRateBenchmark
 ```
+
+This default invocation is the bundled smoke run. Use `--trace` for a real
+experiment.
 
 Choose capacity ratios, capacity semantics, or a different CSV:
 
@@ -178,6 +191,7 @@ The CSV reader expects the libCacheSim sample layout:
 ```
 
 [caffeine-policy]: https://github.com/ben-manes/caffeine/blob/master/simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/sketch/WindowTinyLfuPolicy.java
+[cache-dataset]: https://github.com/cacheMon/cache_dataset
 [s3fifo-paper]: https://junchengyang.com/publication/sosp23-s3fifo.pdf
 [sieve-paper]: https://www.usenix.org/conference/nsdi24/presentation/zhang-yazhuo
 [tinylfu-paper]: https://arxiv.org/abs/1512.00727

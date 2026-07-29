@@ -1,4 +1,4 @@
-# Memory cache operation benchmark
+# memory cache operation benchmark
 
 `MemoryCacheBenchmark` measures complete public operations on a concrete
 `LRUMemoryCache<Int, Data>`. It is not a Policy simulator and it does not place

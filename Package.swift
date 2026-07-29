@@ -40,19 +40,20 @@ let package = Package(
         .target(name: "Latte"),
         .executableTarget(
             name: "PolicyHitRateBenchmark",
-            path: "Benchmarks/PolicyHitRateBenchmark",
-            exclude: ["Data", "README.md"]
+            path: "benchmarks/policy-hit-rate",
+            exclude: ["data", "README.md"],
+            resources: [.copy("fixtures")]
         ),
         .executableTarget(
             name: "MemoryCacheBenchmark",
             dependencies: ["Latte"],
-            path: "Benchmarks/MemoryCacheBenchmark",
+            path: "benchmarks/memory-cache",
             exclude: ["README.md"]
         ),
         .executableTarget(
             name: "FileCacheBenchmark",
             dependencies: ["Latte"],
-            path: "Benchmarks/FileCacheBenchmark",
+            path: "benchmarks/file-cache",
             exclude: ["README.md"]
         ),
         .testTarget(

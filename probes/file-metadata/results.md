@@ -1,4 +1,4 @@
-# FileMetadataProbe Stage 0 Results
+# file metadata probe results
 
 > Date: 2026-07-29
 >
@@ -8,10 +8,10 @@
 >
 > macOS host: 26.5.1 (25F80)
 
-## Conclusion
+## conclusion
 
-The directory-truth persistence model is accepted for `LRUFileCache` V1 on the
-evidence currently available:
+The directory-truth persistence model is accepted for `LRUFileCache` 0.1.0 on
+the evidence currently available:
 
 - atomic move preserves candidate metadata;
 - replacement with `.usingNewMetadataOnly` publishes the candidate payload and
@@ -23,17 +23,18 @@ evidence currently available:
   the fallback;
 - directories are not reported as regular files.
 
-No critical Stage 0 assumption failed. iOS physical-device execution remains a
-V1 release gate. tvOS and visionOS runtime evidence must be added when their
-full Xcode platform components are available.
+No critical filesystem assumption failed. The primary iOS physical-device gate
+is complete. tvOS and visionOS runtime evidence remain deferred. SDK
+compilation or source type-checking is not reported as runtime validation.
 
-## Validation matrix
+## validation matrix
 
 | Target | Validation | Result |
 |---|---|---|
 | macOS 26.5.1 APFS | Debug runtime, 6 tests | Pass |
 | macOS 26.5.1 APFS | Release runtime, 6 tests | Pass |
 | iOS 26.5 Simulator, iPhone 17 Pro | Runtime, 6 tests | Pass |
+| iOS 26.5.2, iPhone 15 Pro | Physical-device runtime, 6 tests | Pass |
 | watchOS 26.5 Simulator, Series 11 46 mm | Runtime, 6 tests | Pass |
 | Mac Catalyst | Runtime, 6 tests | Pass |
 | iOS device SDK | Swift package build | Pass |
@@ -42,14 +43,13 @@ full Xcode platform components are available.
 | visionOS 26.5 SDK | Swift 6 source type-check | Pass |
 | tvOS runtime / Xcode package integration | Full platform component unavailable | Not run |
 | visionOS runtime / Xcode package integration | Full platform component unavailable | Not run |
-| iOS physical device | V1 release gate | Pending |
 
 The installed Xcode exposes the tvOS and visionOS SDKs, so direct Swift 6
 type-checks are possible. Xcode reports the full tvOS 26.5 and visionOS 26.5
 platform components as not installed; those targets therefore cannot currently
 be selected as Swift package destinations.
 
-## Observed metadata
+## observed metadata
 
 The probe intentionally uses payload sizes that cross filesystem allocation
 blocks:
@@ -72,7 +72,7 @@ Allocated size remains an observation rather than a strict quota. The product
 implementation must read the final resident URL after publish and use
 `fileSize` only when `totalFileAllocatedSize` is unavailable.
 
-## Resource-value cache finding
+## resource-value cache finding
 
 The first macOS run exposed stale `contentModificationDate` when the same URL
 value was reused after touch. The filesystem had updated, but Foundation
@@ -83,19 +83,31 @@ The final probe therefore reconstructs a URL from the path and calls
 must preserve this rule for post-publish reads, TTI touches, reconciliation,
 and initialization inventory.
 
-## Commands
+## commands
 
 ```sh
-swift test --package-path Probes/FileMetadataProbe
-swift test --package-path Probes/FileMetadataProbe -c release
+swift test --package-path probes/file-metadata
+swift test --package-path probes/file-metadata -c release
 ```
 
 Simulator and Catalyst runs use the shared workspace:
 
 ```sh
-cd Probes/FileMetadataProbe
+cd probes/file-metadata
 xcodebuild test \
   -workspace .swiftpm/xcode/package.xcworkspace \
   -scheme FileMetadataProbe \
   -destination '<available destination>'
+```
+
+iOS physical-device execution uses the minimal application host required by
+Xcode for device test bundles:
+
+```sh
+xcodebuild test \
+  -project probes/file-metadata/ios-host/host.xcodeproj \
+  -scheme FileMetadataProbeHost \
+  -destination 'platform=iOS,name=YOUR_DEVICE_NAME' \
+  -allowProvisioningUpdates \
+  DEVELOPMENT_TEAM=YOUR_TEAM_ID
 ```

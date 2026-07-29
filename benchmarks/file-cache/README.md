@@ -1,4 +1,4 @@
-# File cache operation benchmark
+# file cache operation benchmark
 
 `FileCacheBenchmark` measures complete awaited operations on a concrete
 `LRUFileCache<Int>`. Every timed public call includes its synchronous file I/O
@@ -7,30 +7,30 @@ timed region.
 
 The default workload fixes:
 
-- 2,000 operations per main scenario；
-- 256 prefilled resident files；
-- 512 possible keys；
-- 64 KiB `Data` values；
-- a deterministic 80% read / 20% write mixed workload；
-- a 60-second persisted access-touch interval；
-- three independent timed runs；
-- median wall-clock duration。
+- 2,000 operations per main scenario;
+- 256 prefilled resident files;
+- 512 possible keys;
+- 64 KiB `Data` values;
+- a deterministic 80% read / 20% write mixed workload;
+- a 60-second persisted access-touch interval;
+- three independent timed runs;
+- median wall-clock duration.
 
 Each run owns a fresh subdirectory under the selected root. The executable
 prints that root, the volume format when Foundation exposes it, and whether the
 volume is local. Use `--directory` to deliberately select APFS, a simulator
 container, external storage, or another filesystem.
 
-## Scenarios
+## scenarios
 
-- `warm-hit` and `warm-miss` use an already initialized and populated Cache；
-  an indexed miss does not read a resident file；
-- `resident-overwrite` measures atomic replacement and final metadata reads；
-- `mixed-read-write` uses the configured deterministic read/write ratio；
-- `remove-insert-cycle` reports each remove and insert as a separate operation；
-- `remove-all` times one deletion of the full resident set per run；
+- `warm-hit` and `warm-miss` use an already initialized and populated Cache;
+  an indexed miss does not read a resident file;
+- `resident-overwrite` measures atomic replacement and final metadata reads;
+- `mixed-read-write` uses the configured deterministic read/write ratio;
+- `remove-insert-cycle` reports each remove and insert as a separate operation;
+- `remove-all` times one deletion of the full resident set per run;
 - `cold-rebuild` times one initializer that reconstructs all resident metadata
-  from an existing directory。
+  from an existing directory.
 
 The default touch interval means repeated warm hits normally read `Data` and
 update in-memory recency without persisting modification time on every hit.

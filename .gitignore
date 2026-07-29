@@ -33,15 +33,15 @@ playground.xcworkspace
 .codegraph/
 .swiftpm/
 .DS_Store
-/Benchmarks/PolicyHitRateBenchmark/Data/
+/benchmarks/policy-hit-rate/data/
 
 # Reproducible Xcode workspace for the standalone filesystem probe
-!/Probes/FileMetadataProbe/.swiftpm/
-/Probes/FileMetadataProbe/.swiftpm/*
-!/Probes/FileMetadataProbe/.swiftpm/xcode/
-/Probes/FileMetadataProbe/.swiftpm/xcode/*
-!/Probes/FileMetadataProbe/.swiftpm/xcode/package.xcworkspace/
-!/Probes/FileMetadataProbe/.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+!/probes/file-metadata/.swiftpm/
+/probes/file-metadata/.swiftpm/*
+!/probes/file-metadata/.swiftpm/xcode/
+/probes/file-metadata/.swiftpm/xcode/*
+!/probes/file-metadata/.swiftpm/xcode/package.xcworkspace/
+!/probes/file-metadata/.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 
 # Local research repositories
 /Research/

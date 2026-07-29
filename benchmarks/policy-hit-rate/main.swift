@@ -1943,8 +1943,17 @@ private struct Configuration {
             return nil
         }
 
-        var tracePath =
-            "Benchmarks/PolicyHitRateBenchmark/Data/twitter_cluster52_10m.csv"
+        guard let bundledTraceURL = Bundle.module.url(
+            forResource: "smoke",
+            withExtension: "csv",
+            subdirectory: "fixtures"
+        ) else {
+            throw BenchmarkError.bundledSmokeTraceMissing
+        }
+
+        var tracePath = bundledTraceURL.path
+        var usesBundledSmokeTrace = true
+        var capacityWasSpecified = false
         var traceFormat: TraceFormat?
         var ratios = [0.001, 0.01, 0.1]
         var absoluteCapacities: [UInt64]?
@@ -1962,6 +1971,7 @@ private struct Configuration {
             switch argument {
             case "--trace":
                 tracePath = try value(after: argument, at: &index, in: arguments)
+                usesBundledSmokeTrace = false
             case "--format":
                 let raw = try value(after: argument, at: &index, in: arguments)
                 guard let parsed = TraceFormat(rawValue: raw) else {
@@ -1969,6 +1979,7 @@ private struct Configuration {
                 }
                 traceFormat = parsed
             case "--ratios":
+                capacityWasSpecified = true
                 let raw = try value(after: argument, at: &index, in: arguments)
                 ratios = raw.split(separator: ",").compactMap {
                     Double($0.trimmingCharacters(in: .whitespaces))
@@ -1980,6 +1991,7 @@ private struct Configuration {
                 }
                 absoluteCapacities = nil
             case "--capacities":
+                capacityWasSpecified = true
                 let raw = try value(after: argument, at: &index, in: arguments)
                 let parsed = raw.split(separator: ",").compactMap {
                     UInt64($0.trimmingCharacters(in: .whitespaces))
@@ -2043,11 +2055,16 @@ private struct Configuration {
         let inferredFormat: TraceFormat =
             tracePath.hasSuffix(".bin") ? .oracleGeneral : .csv
 
+        let effectiveAbsoluteCapacities =
+            usesBundledSmokeTrace && !capacityWasSpecified
+            ? [10, 20, 40]
+            : absoluteCapacities
+
         return Configuration(
             tracePath: tracePath,
             traceFormat: traceFormat ?? inferredFormat,
             ratios: ratios.sorted(),
-            absoluteCapacities: absoluteCapacities,
+            absoluteCapacities: effectiveAbsoluteCapacities,
             modes: modes,
             slruSegmentCount: slruSegmentCount,
             windowTinyLFUWindowFraction: windowTinyLFUWindowFraction,
@@ -2072,6 +2089,7 @@ private struct Configuration {
 }
 
 private enum BenchmarkError: Error, CustomStringConvertible {
+    case bundledSmokeTraceMissing
     case invalidCapacities(String)
     case invalidFormat(String)
     case invalidLimit(String)
@@ -2086,6 +2104,8 @@ private enum BenchmarkError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
+        case .bundledSmokeTraceMissing:
+            "Bundled smoke trace is missing"
         case .invalidCapacities(let value):
             "Invalid absolute capacities: \(value)"
         case .invalidFormat(let value):
@@ -2120,9 +2140,11 @@ private func printUsage() {
 
         Options:
           --trace PATH       CSV or oracleGeneral binary trace
+                             (default: bundled smoke trace)
           --format FORMAT    csv or oracle-general (normally inferred)
           --ratios LIST      Footprint ratios (default: 0.001,0.01,0.1)
           --capacities LIST  Absolute capacities instead of ratios
+                             (smoke default: 10,20,40)
           --mode MODE        objects, bytes, or both (default: both)
           --slru-segments N  Equal SLRU segments (default: 4)
           --wtinylfu-window FRACTION
