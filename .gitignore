@@ -30,6 +30,21 @@ playground.xcworkspace
 # .swiftpm
 
 .build/
+.codegraph/
+.swiftpm/
+.DS_Store
+/Benchmarks/PolicyHitRateBenchmark/Data/
+
+# Reproducible Xcode workspace for the standalone filesystem probe
+!/Probes/FileMetadataProbe/.swiftpm/
+/Probes/FileMetadataProbe/.swiftpm/*
+!/Probes/FileMetadataProbe/.swiftpm/xcode/
+/Probes/FileMetadataProbe/.swiftpm/xcode/*
+!/Probes/FileMetadataProbe/.swiftpm/xcode/package.xcworkspace/
+!/Probes/FileMetadataProbe/.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+
+# Local research repositories
+/Research/
 
 # CocoaPods
 #
