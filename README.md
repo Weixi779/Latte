@@ -8,10 +8,10 @@ or visionOS 1.
 
 Latte 当前的产品方向、已接受边界与待验证问题见 [DIRECTION.md](DIRECTION.md)。
 
-V1 已提供 `Caching`、`AsyncCaching` 两种最小缓存协议，以及首个完整实现
-`LRUMemoryCache`。下一个完整实现 `LRUFileCache` 的冻结边界与实施顺序见
-[LRU file cache plan](LRU_FILE_CACHE_PLAN.md)，文件系统假设的 Stage 0
-验证结果见
+V1 已提供 `Caching`、`AsyncCaching` 两种最小缓存协议，以及
+`LRUMemoryCache`、`LRUFileCache` 两个完整实现。文件 Cache 的设计边界、
+失败语义与实施记录见
+[LRU file cache plan](LRU_FILE_CACHE_PLAN.md)，文件系统假设的验证结果见
 [FileMetadataProbe results](Probes/FileMetadataProbe/RESULTS.md)。具体 Cache
 可以拥有不同的 cost、expiration、容量与持久化能力。
 

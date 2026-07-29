@@ -44,6 +44,10 @@ public enum LRUFileCacheError: Error, Equatable, Sendable {
 /// The supplied directory is exclusively owned by the cache. Latte records
 /// that ownership with a marker and refuses to modify a non-empty directory
 /// whose contents cannot be proven to belong to this cache family.
+///
+/// Capacity is an observed soft limit based on each resident's allocated file
+/// size, with logical size as a fallback. Expiration is instance-wide and is
+/// cleaned opportunistically during startup, lookup, and insertion.
 public final class LRUFileCache<Key: Hashable>: AsyncCaching {
     public typealias Value = Data
     public typealias StableKeyEncoder = @Sendable (Key) throws -> Data
@@ -53,11 +57,22 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
     /// Settings apply uniformly to every resident. Use separate cache
     /// instances when different capacity or expiration behavior is required.
     public struct Configuration: Sendable {
+        /// The observed soft capacity in bytes.
         public let maximumDiskUsage: Int
+
+        /// The fraction to which an over-capacity cache is trimmed.
         public let lowWatermark: Double
+
+        /// The fraction above which trimming begins.
         public let highWatermark: Double
+
+        /// The lifetime measured from the latest successful write.
         public let timeToLive: Duration?
+
+        /// The idle lifetime measured from the latest successful read or write.
         public let timeToIdle: Duration?
+
+        /// The minimum interval between persistent access-date updates.
         public let accessTimeUpdateInterval: Duration
 
         public init(
@@ -115,11 +130,27 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
             let inventory = try validatedInventory(for: itemURLs)
             try removeTemporaryArtifacts(inventory.temporaryArtifacts)
             try rebuildResidents(inventory.residents)
+            let now = wallClock.now()
+            try removeExpiredResidents(now: now)
+            try trimToLowWatermarkIfNeeded(protecting: nil)
         }
 
         mutating func value(for filename: FileCacheFilename) throws -> Data? {
             try requireAvailable()
             guard var resident = residents[filename] else {
+                return nil
+            }
+
+            let now = wallClock.now()
+            if isExpired(resident, at: now) {
+                do {
+                    try fileAccess.removeItem(at: resident.url)
+                    forgetResident(filename)
+                } catch {
+                    if isMissingFileError(error) {
+                        forgetResident(filename)
+                    }
+                }
                 return nil
             }
 
@@ -134,7 +165,6 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
                 throw error
             }
 
-            let now = wallClock.now()
             if shouldPersistAccess(
                 now: now,
                 lastPersisted: resident.lastPersistedAccessDate
@@ -161,6 +191,12 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
             for filename: FileCacheFilename
         ) throws {
             try requireAvailable()
+            guard configuration.maximumDiskUsage > 0,
+                  !hasImmediateExpiration,
+                  data.count <= highWatermarkLimit
+            else {
+                return
+            }
 
             let destination = directory.appendingPathComponent(
                 filename.rawValue,
@@ -173,10 +209,25 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
             )
             let now = wallClock.now()
             var published = false
+            let resident: Resident
 
             do {
                 try fileAccess.writeStagingData(data, to: temporaryURL)
                 try fileAccess.setModificationDate(now, at: temporaryURL)
+                let temporaryMetadata = try fileAccess.metadata(
+                    at: temporaryURL
+                )
+                let temporarySize = try observedSize(
+                    from: temporaryMetadata,
+                    filename: temporaryName
+                )
+                if temporarySize > highWatermarkLimit {
+                    try removeTemporaryArtifact(
+                        at: temporaryURL,
+                        name: temporaryName
+                    )
+                    return
+                }
 
                 if residents[filename] == nil {
                     try fileAccess.moveItem(
@@ -192,26 +243,16 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
                 published = true
 
                 let metadata = try fileAccess.metadata(at: destination)
-                let resident = try makeResident(
+                resident = try makeResident(
                     url: destination,
                     metadata: metadata
                 )
-                recordResident(resident, for: filename)
             } catch {
                 if published {
-                    do {
-                        try fileAccess.removeItem(at: destination)
-                        forgetResident(filename)
-                    } catch {
-                        if !isMissingFileError(error) {
-                            isAvailable = false
-                            throw LRUFileCacheError
-                                .publishedMetadataUnavailable(
-                                    filename.rawValue
-                                )
-                        }
-                        forgetResident(filename)
-                    }
+                    try discardPublishedCandidateAndReconcile(
+                        filename,
+                        at: destination
+                    )
                 } else {
                     do {
                         try fileAccess.removeItem(at: temporaryURL)
@@ -228,6 +269,18 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
 
                 throw error
             }
+
+            if resident.allocatedSize > highWatermarkLimit {
+                try discardPublishedCandidateAndReconcile(
+                    filename,
+                    at: destination
+                )
+                return
+            }
+
+            recordResident(resident, for: filename)
+            try removeExpiredResidents(now: now)
+            try trimToLowWatermarkIfNeeded(protecting: filename)
         }
 
         mutating func removeValue(
@@ -259,6 +312,14 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
             } catch {
                 isAvailable = false
                 throw error
+            }
+
+            let inventoriedResidents = Set(inventory.residents)
+            let missingResidents = residents.keys.filter {
+                !inventoriedResidents.contains($0)
+            }
+            for filename in missingResidents {
+                forgetResident(filename)
             }
 
             var firstError: (any Error)?
@@ -469,6 +530,19 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
         private mutating func rebuildResidents(
             _ filenames: [FileCacheFilename]
         ) throws {
+            let snapshot = try recoverResidents(filenames)
+            residents = snapshot.residents
+            recency = snapshot.recency
+            observedDiskUsage = snapshot.observedDiskUsage
+        }
+
+        private func recoverResidents(
+            _ filenames: [FileCacheFilename]
+        ) throws -> (
+            residents: [FileCacheFilename: Resident],
+            recency: LRUList<FileCacheFilename>,
+            observedDiskUsage: Int
+        ) {
             var recovered: [
                 (filename: FileCacheFilename, resident: Resident)
             ] = []
@@ -513,11 +587,16 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
                     < $1.resident.lastAccessDate
             }
 
+            var residents: [FileCacheFilename: Resident] = [:]
+            var recency = LRUList<FileCacheFilename>()
+            var observedDiskUsage = 0
             for item in recovered {
                 residents[item.filename] = item.resident
                 recency.append(item.filename)
                 observedDiskUsage += item.resident.allocatedSize
             }
+
+            return (residents, recency, observedDiskUsage)
         }
 
         private func makeResident(
@@ -527,7 +606,8 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
             guard metadata.isRegularFile == true,
                   let writtenDate = metadata.creationDate,
                   let lastAccessDate = metadata.modificationDate,
-                  let size = metadata.allocatedSize ?? metadata.logicalSize
+                  let size = metadata.allocatedSize ?? metadata.logicalSize,
+                  size >= 0
             else {
                 throw LRUFileCacheError.publishedMetadataUnavailable(
                     url.lastPathComponent
@@ -541,6 +621,169 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
                 lastAccessDate: lastAccessDate,
                 lastPersistedAccessDate: lastAccessDate
             )
+        }
+
+        private func observedSize(
+            from metadata: FileCacheFileMetadata,
+            filename: String
+        ) throws -> Int {
+            guard metadata.isRegularFile == true,
+                  let size = metadata.allocatedSize ?? metadata.logicalSize,
+                  size >= 0
+            else {
+                throw LRUFileCacheError.publishedMetadataUnavailable(
+                    filename
+                )
+            }
+            return size
+        }
+
+        private mutating func removeTemporaryArtifact(
+            at url: URL,
+            name: String
+        ) throws {
+            do {
+                try fileAccess.removeItem(at: url)
+            } catch {
+                guard isMissingFileError(error) else {
+                    isAvailable = false
+                    throw LRUFileCacheError
+                        .temporaryArtifactCleanupFailed(name)
+                }
+            }
+        }
+
+        private mutating func discardPublishedCandidateAndReconcile(
+            _ filename: FileCacheFilename,
+            at url: URL
+        ) throws {
+            do {
+                try fileAccess.removeItem(at: url)
+            } catch {
+                guard isMissingFileError(error) else {
+                    isAvailable = false
+                    throw LRUFileCacheError.publishedMetadataUnavailable(
+                        filename.rawValue
+                    )
+                }
+            }
+            forgetResident(filename)
+
+            do {
+                let itemURLs = try fileAccess.contentsOfDirectory(
+                    at: directory
+                )
+                let inventory = try validatedInventory(for: itemURLs)
+                try removeTemporaryArtifacts(inventory.temporaryArtifacts)
+                let snapshot = try recoverResidents(inventory.residents)
+                residents = snapshot.residents
+                recency = snapshot.recency
+                observedDiskUsage = snapshot.observedDiskUsage
+            } catch {
+                isAvailable = false
+                throw error
+            }
+        }
+
+        private mutating func removeExpiredResidents(
+            now: Date
+        ) throws {
+            guard hasExpiration else {
+                return
+            }
+
+            for filename in recency.keys {
+                guard let resident = residents[filename],
+                      isExpired(resident, at: now)
+                else {
+                    continue
+                }
+
+                do {
+                    try fileAccess.removeItem(at: resident.url)
+                    forgetResident(filename)
+                } catch {
+                    if isMissingFileError(error) {
+                        forgetResident(filename)
+                    } else {
+                        throw error
+                    }
+                }
+            }
+        }
+
+        private mutating func trimToLowWatermarkIfNeeded(
+            protecting protectedFilename: FileCacheFilename?
+        ) throws {
+            guard observedDiskUsage > highWatermarkLimit else {
+                return
+            }
+
+            while observedDiskUsage > lowWatermarkLimit {
+                guard let victim = recency.leastRecentlyUsedKey,
+                      victim != protectedFilename,
+                      let resident = residents[victim]
+                else {
+                    return
+                }
+
+                do {
+                    try fileAccess.removeItem(at: resident.url)
+                    forgetResident(victim)
+                } catch {
+                    if isMissingFileError(error) {
+                        forgetResident(victim)
+                    } else {
+                        throw error
+                    }
+                }
+            }
+        }
+
+        private func isExpired(
+            _ resident: Resident,
+            at now: Date
+        ) -> Bool {
+            if let timeToLive = configuration.timeToLive,
+               now.timeIntervalSince(resident.writtenDate)
+                   >= timeToLive.timeInterval {
+                return true
+            }
+            if let timeToIdle = configuration.timeToIdle,
+               now.timeIntervalSince(resident.lastAccessDate)
+                   >= timeToIdle.timeInterval {
+                return true
+            }
+            return false
+        }
+
+        private var hasImmediateExpiration: Bool {
+            configuration.timeToLive == .zero
+                || configuration.timeToIdle == .zero
+        }
+
+        private var hasExpiration: Bool {
+            configuration.timeToLive != nil
+                || configuration.timeToIdle != nil
+        }
+
+        private var lowWatermarkLimit: Int {
+            byteLimit(for: configuration.lowWatermark)
+        }
+
+        private var highWatermarkLimit: Int {
+            byteLimit(for: configuration.highWatermark)
+        }
+
+        private func byteLimit(for watermark: Double) -> Int {
+            if watermark >= 1 {
+                return configuration.maximumDiskUsage
+            }
+            let scaled = Double(configuration.maximumDiskUsage) * watermark
+            if scaled >= Double(Int.max) {
+                return .max
+            }
+            return Int(scaled.rounded(.down))
         }
 
         private mutating func recordResident(
@@ -676,20 +919,24 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
                 "maximumDiskUsage must be nonnegative"
             )
         }
-        guard (0...1).contains(configuration.lowWatermark) else {
+        guard configuration.lowWatermark > 0,
+              configuration.lowWatermark < 1
+        else {
             throw LRUFileCacheError.invalidConfiguration(
-                "lowWatermark must be between zero and one"
+                "lowWatermark must be greater than zero and less than one"
             )
         }
-        guard (0...1).contains(configuration.highWatermark) else {
+        guard configuration.highWatermark > 0,
+              configuration.highWatermark <= 1
+        else {
             throw LRUFileCacheError.invalidConfiguration(
-                "highWatermark must be between zero and one"
+                "highWatermark must be greater than zero and at most one"
             )
         }
         guard configuration.lowWatermark
-            <= configuration.highWatermark else {
+            < configuration.highWatermark else {
             throw LRUFileCacheError.invalidConfiguration(
-                "lowWatermark must not exceed highWatermark"
+                "lowWatermark must be less than highWatermark"
             )
         }
         guard configuration.timeToLive.map({ $0 >= .zero }) ?? true else {

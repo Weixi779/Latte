@@ -1,6 +1,6 @@
 # LRUFileCache V1 实施计划
 
-> 状态：Stage 0、Stage A、Stage B、Stage C 已完成；下一步进入 Stage D
+> 状态：Stage 0 至 Stage D 已完成；下一步进入 Stage E
 > 日期：2026-07-29
 > 主视角：状态所有权
 > 辅助视角：API 边界、失败语义与不必要复杂度
@@ -660,6 +660,22 @@ Stage C 验证结果：
 - TTL / TTI；
 - throttled access-date persistence；
 - 初始化和容量路径的过期优先清理。
+
+Stage D 已完成：
+
+- 容量优先使用最终正式文件的 allocated size，缺失时回退 logical size；
+- 严格超过 high watermark 才触发回收，并回收到 low watermark；
+- 本次候选只在当前 insert 中受保护，单条 oversized 属于正常拒绝；
+- trim 失败不伪装成 publish 失败，已成功的文件变更和内存 state 保持一致；
+- TTL / TTI 使用实例级 `Duration`，支持进程内精确刷新、持久化 touch 节流与
+  重启恢复；
+- 初始化、目标 lookup 和 insert 路径执行机会式过期清理，不引入后台任务；
+- expiration 全部关闭时跳过 resident 遍历，批量 trim 使用 O(1) LRU 头节点选择；
+- `removeAll` 在 inventory 验证后同步清除已被系统移除的 resident state；
+- 发布后 metadata 异常和最终尺寸拒绝都会通过完整目录 reconciliation 收敛；
+- Debug、Release 与 Thread Sanitizer 下 69 个测试全部通过；
+- iOS 16、watchOS 9 与 Mac Catalyst 16 通用目标构建通过；
+- tvOS 16 与 visionOS 1 使用对应 SDK 完成 Swift 6 源码 type-check。
 
 ### Stage E：交付验证与文档
 
