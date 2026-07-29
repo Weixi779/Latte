@@ -57,6 +57,26 @@ The directory and final file metadata are persistence truth. There is no
 manifest, journal, or checkpoint. Startup reconstructs in-memory state from the
 directory.
 
+## statistics
+
+Statistics collection is disabled by default. Set `isStatisticsEnabled` in the
+configuration to expose asynchronous `CacheStatistics` snapshots.
+
+The accumulator is process-local state owned by the same serial worker as
+resident metadata and LRU order. Reading `statistics` queues behind preceding
+cache work, does not perform file I/O, and remains available if a later storage
+failure makes the cache instance unavailable.
+
+Recovered files contribute to `residentCount` and `residentCost` after startup,
+while hit, miss, eviction, and rejection counters begin at zero. Counters are
+not written to the cache directory and do not survive instance recreation or
+process restart.
+
+Request outcomes follow returned behavior: an absorbed expiration-cleanup
+failure remains a miss, and an absorbed touch failure after a successful read
+remains a hit. Only capacity victims count as evictions; expiration,
+reconciliation, replacement, and explicit removal do not.
+
 ## capacity
 
 `maximumDiskUsage` is an observed soft limit, not a filesystem quota.
@@ -212,4 +232,5 @@ environment is reported as deferred rather than inferred from SDK compilation.
 
 The implementation does not provide strict quota enforcement, per-entry
 expiration, background cleanup, directory sharing, file locking, encryption,
-compression, serialization, or observability.
+compression, serialization, persisted statistics, event streams, tracing, or
+external metrics exporters.

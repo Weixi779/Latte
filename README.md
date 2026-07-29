@@ -57,7 +57,8 @@ let fileCache = try await LRUFileCache<URL>(
         maximumDiskUsage: 512 * 1024 * 1024,
         timeToLive: .seconds(7 * 24 * 60 * 60),
         timeToIdle: .seconds(24 * 60 * 60),
-        accessTimeUpdateInterval: .seconds(5 * 60)
+        accessTimeUpdateInterval: .seconds(5 * 60),
+        isStatisticsEnabled: true
     ),
     stableKeyEncoder: { url in
         Data(url.absoluteString.utf8)
@@ -70,6 +71,31 @@ let cachedData = try await fileCache.value(for: imageURL)
 
 同一 Key 必须在不同启动中产生相同 material。该 encoder 可能被多个调用任务并发
 执行，不能依赖未同步的可变状态。目录必须专属于一个 Cache 实例和进程。
+
+## statistics
+
+统计默认关闭，并在构造 Cache 时显式开启：
+
+```swift
+let memoryCache = LRUMemoryCache<String, Data>(
+    configuration: .init(
+        maximumCost: 60 * 1024 * 1024,
+        isStatisticsEnabled: true,
+        weigher: { _, data in data.count }
+    )
+)
+
+let memoryStatistics = memoryCache.statistics
+let fileStatistics = await fileCache.statistics
+```
+
+`LRUMemoryCache` 通过 `CacheStatisticsProviding` 同步提供快照，
+`LRUFileCache` 通过 `AsyncCacheStatisticsProviding` 异步提供快照。关闭时返回
+`nil`；开启后可以读取 hit、miss、eviction、rejection、resident count/cost
+以及派生的 request count 和 hit rate。
+
+统计属于单个 Cache 实例，只保存在内存中，不跨进程启动持久化。文件 Cache
+重建时会恢复当前 residency，但历史计数从零开始。
 
 ## composition
 
@@ -122,6 +148,7 @@ struct NetworkImageCache<Image> {
 ## technical documentation
 
 - [Architecture](docs/architecture.md)
+- [Cache statistics](docs/cache-statistics-plan.md)
 - [File cache](docs/file-cache.md)
 - [Filesystem evidence](probes/file-metadata/results.md)
 - [Benchmarks](benchmarks/README.md)

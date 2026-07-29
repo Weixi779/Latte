@@ -2,9 +2,9 @@
 
 ## status
 
-This document defines the accepted first implementation of cache statistics.
-It is an implementation plan, not a description of currently released
-behavior.
+This document records the accepted first implementation of cache statistics.
+Stages A through D are complete in the current source tree. It remains the
+design and verification record for the capability rather than release notes.
 
 The change is a scoped extension of the existing cache state machines. It does
 not introduce another library target, a generic policy abstraction, or an

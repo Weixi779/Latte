@@ -20,7 +20,7 @@ private struct Options {
     var capacity = 4_096
     var keySpace = 8_192
     var valueSize = 4_096
-    var runs = 5
+    var runs = 6
 
     static func parse(_ arguments: [String]) throws -> Self {
         var options = Self()
@@ -65,6 +65,11 @@ private struct Options {
                 "--capacity multiplied by --value-size is too large"
             )
         }
+        guard options.runs.isMultiple(of: 2) else {
+            throw BenchmarkError.invalidValue(
+                "--runs must be an even positive integer"
+            )
+        }
         return options
     }
 }
@@ -73,6 +78,7 @@ private enum BenchmarkError: Error, CustomStringConvertible {
     case unknownArgument(String)
     case missingValue(String)
     case invalidValue(String)
+    case invalidStatistics(String)
 
     var description: String {
         switch self {
@@ -82,12 +88,33 @@ private enum BenchmarkError: Error, CustomStringConvertible {
             "Missing value for \(argument)"
         case let .invalidValue(message):
             message
+        case let .invalidStatistics(message):
+            "Invalid statistics: \(message)"
         }
+    }
+}
+
+private enum StatisticsMode: CaseIterable {
+    case disabled
+    case enabled
+
+    var name: String {
+        switch self {
+        case .disabled:
+            "disabled"
+        case .enabled:
+            "enabled"
+        }
+    }
+
+    var isEnabled: Bool {
+        self == .enabled
     }
 }
 
 private struct Measurement {
     let name: String
+    let statisticsMode: StatisticsMode
     let operations: Int
     let medianNanoseconds: UInt64
     let checksum: UInt64
@@ -101,14 +128,59 @@ private struct Measurement {
     }
 }
 
+private struct Comparison {
+    let disabled: Measurement
+    let enabled: Measurement
+
+    var relativeOverheadPercent: Double {
+        let baseline = disabled.nanosecondsPerOperation
+        return (enabled.nanosecondsPerOperation - baseline) / baseline * 100
+    }
+}
+
+private struct MeasurementSamples {
+    var durations: [UInt64] = []
+    var checksum: UInt64 = 0
+
+    mutating func record(
+        duration: UInt64,
+        checksum: UInt64
+    ) {
+        durations.append(duration)
+        self.checksum &+= checksum
+    }
+
+    func measurement(
+        name: String,
+        statisticsMode: StatisticsMode,
+        operations: Int
+    ) -> Measurement {
+        let sortedDurations = durations.sorted()
+        return Measurement(
+            name: name,
+            statisticsMode: statisticsMode,
+            operations: operations,
+            medianNanoseconds: sortedDurations[sortedDurations.count / 2],
+            checksum: checksum
+        )
+    }
+}
+
+private struct PreparedMeasurement {
+    let execute: () -> UInt64
+    let verify: (UInt64) throws -> Void
+}
+
 private typealias MemoryCache = LRUMemoryCache<Int, Data>
 
 private func makeCache(
-    options: Options
+    options: Options,
+    statisticsMode: StatisticsMode
 ) -> MemoryCache {
     MemoryCache(
         configuration: .init(
             maximumCost: options.capacity * options.valueSize,
+            isStatisticsEnabled: statisticsMode.isEnabled,
             weigher: { _, data in data.count }
         )
     )
@@ -124,64 +196,114 @@ private func populate(
     }
 }
 
-private func measure(
+private func measureComparison(
     name: String,
     operations: Int,
-    runs: Int,
-    prepare: () -> () -> UInt64
-) -> Measurement {
-    var durations: [UInt64] = []
-    durations.reserveCapacity(runs)
-    var checksum: UInt64 = 0
+    options: Options,
+    prepare: (StatisticsMode) -> PreparedMeasurement
+) throws -> Comparison {
+    var disabledSamples = MeasurementSamples()
+    var enabledSamples = MeasurementSamples()
+    disabledSamples.durations.reserveCapacity(options.runs)
+    enabledSamples.durations.reserveCapacity(options.runs)
 
-    for _ in 0..<runs {
-        let execute = prepare()
-        let start = DispatchTime.now().uptimeNanoseconds
-        checksum &+= execute()
-        durations.append(DispatchTime.now().uptimeNanoseconds - start)
+    for run in 0..<options.runs {
+        for statisticsMode in statisticsModes(for: run) {
+            let prepared = prepare(statisticsMode)
+            let start = DispatchTime.now().uptimeNanoseconds
+            let checksum = prepared.execute()
+            let duration = DispatchTime.now().uptimeNanoseconds - start
+            try prepared.verify(checksum)
+
+            switch statisticsMode {
+            case .disabled:
+                disabledSamples.record(
+                    duration: duration,
+                    checksum: checksum
+                )
+            case .enabled:
+                enabledSamples.record(
+                    duration: duration,
+                    checksum: checksum
+                )
+            }
+        }
     }
-
-    durations.sort()
-    return Measurement(
+    let disabled = disabledSamples.measurement(
         name: name,
-        operations: operations,
-        medianNanoseconds: durations[durations.count / 2],
-        checksum: checksum
+        statisticsMode: .disabled,
+        operations: operations
     )
+    let enabled = enabledSamples.measurement(
+        name: name,
+        statisticsMode: .enabled,
+        operations: operations
+    )
+    guard disabled.checksum == enabled.checksum else {
+        throw BenchmarkError.invalidStatistics(
+            "\(name) produced different disabled and enabled checksums"
+        )
+    }
+    return Comparison(disabled: disabled, enabled: enabled)
 }
 
-private func run(options: Options) -> [Measurement] {
+private func statisticsModes(for run: Int) -> [StatisticsMode] {
+    run.isMultiple(of: 2)
+        ? [.disabled, .enabled]
+        : [.enabled, .disabled]
+}
+
+private func run(options: Options) throws -> [Comparison] {
     let value = Data(repeating: 0xA5, count: options.valueSize)
-    var results: [Measurement] = []
+    let residentCost = options.capacity * options.valueSize
+    var results: [Comparison] = []
 
     results.append(
-        measure(
+        try measureComparison(
             name: "warm-hit",
             operations: options.operations,
-            runs: options.runs
-        ) {
-            let cache = makeCache(options: options)
+            options: options
+        ) { statisticsMode in
+            let cache = makeCache(
+                options: options,
+                statisticsMode: statisticsMode
+            )
             populate(cache, count: options.capacity, value: value)
-            return {
+            return PreparedMeasurement {
                 var checksum: UInt64 = 0
                 for operation in 0..<options.operations {
                     let key = operation % options.capacity
                     checksum &+= UInt64(cache.value(for: key)?.count ?? 0)
                 }
                 return checksum
+            } verify: { _ in
+                try verifyStatistics(
+                    cache.statistics,
+                    mode: statisticsMode,
+                    scenario: "warm-hit"
+                ) { statistics in
+                    statistics == CacheStatistics(
+                        hitCount: UInt64(options.operations),
+                        residentCount: options.capacity,
+                        residentCost: residentCost
+                    )
+                }
             }
         }
     )
 
     results.append(
-        measure(
+        try measureComparison(
             name: "miss",
             operations: options.operations,
-            runs: options.runs
-        ) {
-            let cache = makeCache(options: options)
+            options: options
+        ) { statisticsMode in
+            let cache = makeCache(
+                options: options,
+                statisticsMode: statisticsMode
+            )
             populate(cache, count: options.capacity, value: value)
-            return {
+            return PreparedMeasurement {
                 var checksum: UInt64 = 0
                 for operation in 0..<options.operations {
                     let key = options.capacity
@@ -191,19 +313,34 @@ private func run(options: Options) -> [Measurement] {
                     }
                 }
                 return checksum
+            } verify: { _ in
+                try verifyStatistics(
+                    cache.statistics,
+                    mode: statisticsMode,
+                    scenario: "miss"
+                ) { statistics in
+                    statistics == CacheStatistics(
+                        missCount: UInt64(options.operations),
+                        residentCount: options.capacity,
+                        residentCost: residentCost
+                    )
+                }
             }
         }
     )
 
     results.append(
-        measure(
+        try measureComparison(
             name: "resident-overwrite",
             operations: options.operations,
-            runs: options.runs
-        ) {
-            let cache = makeCache(options: options)
+            options: options
+        ) { statisticsMode in
+            let cache = makeCache(
+                options: options,
+                statisticsMode: statisticsMode
+            )
             populate(cache, count: options.capacity, value: value)
-            return {
+            return PreparedMeasurement {
                 for operation in 0..<options.operations {
                     cache.insert(
                         value,
@@ -211,19 +348,33 @@ private func run(options: Options) -> [Measurement] {
                     )
                 }
                 return UInt64(options.operations)
+            } verify: { _ in
+                try verifyStatistics(
+                    cache.statistics,
+                    mode: statisticsMode,
+                    scenario: "resident-overwrite"
+                ) { statistics in
+                    statistics == CacheStatistics(
+                        residentCount: options.capacity,
+                        residentCost: residentCost
+                    )
+                }
             }
         }
     )
 
     results.append(
-        measure(
+        try measureComparison(
             name: "evicting-insert",
             operations: options.operations,
-            runs: options.runs
-        ) {
-            let cache = makeCache(options: options)
+            options: options
+        ) { statisticsMode in
+            let cache = makeCache(
+                options: options,
+                statisticsMode: statisticsMode
+            )
             populate(cache, count: options.capacity, value: value)
-            return {
+            return PreparedMeasurement {
                 let distanceToWrap = options.keySpace
                     - options.capacity
                 for operation in 0..<options.operations {
@@ -234,19 +385,39 @@ private func run(options: Options) -> [Measurement] {
                     cache.insert(value, for: key)
                 }
                 return UInt64(options.operations)
+            } verify: { _ in
+                try verifyStatistics(
+                    cache.statistics,
+                    mode: statisticsMode,
+                    scenario: "evicting-insert"
+                ) { statistics in
+                    statistics == CacheStatistics(
+                        evictionCount: UInt64(options.operations),
+                        evictedCost: saturatingProduct(
+                            options.operations,
+                            options.valueSize
+                        ),
+                        residentCount: options.capacity,
+                        residentCost: residentCost
+                    )
+                }
             }
         }
     )
 
+    let mixedRequestCount = mixedReadCount(operations: options.operations)
     results.append(
-        measure(
+        try measureComparison(
             name: "mixed-80r-15w-5d",
             operations: options.operations,
-            runs: options.runs
-        ) {
-            let cache = makeCache(options: options)
+            options: options
+        ) { statisticsMode in
+            let cache = makeCache(
+                options: options,
+                statisticsMode: statisticsMode
+            )
             populate(cache, count: options.capacity, value: value)
-            return {
+            return PreparedMeasurement {
                 var checksum: UInt64 = 0
                 for operation in 0..<options.operations {
                     let key = mixedKey(
@@ -265,26 +436,85 @@ private func run(options: Options) -> [Measurement] {
                     }
                 }
                 return checksum
+            } verify: { checksum in
+                let requestCount = UInt64(mixedRequestCount)
+                try verifyStatistics(
+                    cache.statistics,
+                    mode: statisticsMode,
+                    scenario: "mixed-80r-15w-5d"
+                ) { statistics in
+                    statistics.hitCount == checksum
+                        && statistics.missCount
+                            == requestCount - checksum
+                        && statistics.rejectionCount == 0
+                        && statistics.residentCount <= options.capacity
+                        && statistics.residentCost
+                            == statistics.residentCount * options.valueSize
+                }
             }
         }
     )
 
     results.append(
-        measure(
+        try measureComparison(
             name: "remove-all",
             operations: 1,
-            runs: options.runs
-        ) {
-            let cache = makeCache(options: options)
+            options: options
+        ) { statisticsMode in
+            let cache = makeCache(
+                options: options,
+                statisticsMode: statisticsMode
+            )
             populate(cache, count: options.capacity, value: value)
-            return {
+            return PreparedMeasurement {
                 cache.removeAll()
                 return UInt64(options.capacity)
+            } verify: { _ in
+                try verifyStatistics(
+                    cache.statistics,
+                    mode: statisticsMode,
+                    scenario: "remove-all"
+                ) { statistics in
+                    statistics == CacheStatistics()
+                }
             }
         }
     )
 
     return results
+}
+
+private func verifyStatistics(
+    _ statistics: CacheStatistics?,
+    mode: StatisticsMode,
+    scenario: String,
+    enabledMatches: (CacheStatistics) -> Bool
+) throws {
+    switch mode {
+    case .disabled:
+        guard statistics == nil else {
+            throw BenchmarkError.invalidStatistics(
+                "\(scenario) disabled collection returned a snapshot"
+            )
+        }
+    case .enabled:
+        guard let statistics, enabledMatches(statistics) else {
+            throw BenchmarkError.invalidStatistics(
+                "\(scenario) enabled snapshot did not match its workload"
+            )
+        }
+    }
+}
+
+private func mixedReadCount(operations: Int) -> Int {
+    operations / 20 * 16 + min(operations % 20, 16)
+}
+
+private func saturatingProduct(_ lhs: Int, _ rhs: Int) -> UInt64 {
+    let (product, overflow) = UInt64(lhs).multipliedReportingOverflow(
+        by: UInt64(rhs)
+    )
+    return overflow ? .max : product
 }
 
 private func mixedKey(
@@ -309,7 +539,7 @@ private func positiveInteger(
 }
 
 private func printResults(
-    _ results: [Measurement],
+    _ results: [Comparison],
     options: Options
 ) {
     print("MemoryCacheBenchmark")
@@ -325,17 +555,36 @@ private func printResults(
     print("key space: \(options.keySpace)")
     print("value size: \(options.valueSize) bytes")
     print("timed runs: \(options.runs)")
+    print("statistics pairing: even disabled/enabled, odd enabled/disabled")
+    print("statistics getter and validation: outside timed region")
     print()
-    print("scenario\tmedian ns/op\toperations/s\tchecksum")
+    print("absolute results")
+    print("scenario\tstatistics\tmedian ns/op\toperations/s\tchecksum")
 
-    for result in results {
+    for comparison in results {
+        for result in [comparison.disabled, comparison.enabled] {
+            print(
+                String(
+                    format: "%@\t%@\t%.2f\t%.0f\t%llu",
+                    result.name,
+                    result.statisticsMode.name,
+                    result.nanosecondsPerOperation,
+                    result.operationsPerSecond,
+                    result.checksum
+                )
+            )
+        }
+    }
+
+    print()
+    print("relative statistics collection overhead")
+    print("scenario\tenabled vs disabled")
+    for comparison in results {
         print(
             String(
-                format: "%@\t%.2f\t%.0f\t%llu",
-                result.name,
-                result.nanosecondsPerOperation,
-                result.operationsPerSecond,
-                result.checksum
+                format: "%@\t%+.2f%%",
+                comparison.disabled.name,
+                comparison.relativeOverheadPercent
             )
         )
     }
@@ -357,7 +606,7 @@ private func printUsage() {
           --capacity <count>    Resident entry capacity (default 4096)
           --key-space <count>   Workload key space (default 8192)
           --value-size <bytes>  Data size per value (default 4096)
-          --runs <count>        Independent timed runs (default 5)
+          --runs <count>        Even independent timed runs (default 6)
           --help                Show this help
         """
     )
@@ -365,7 +614,7 @@ private func printUsage() {
 
 do {
     let options = try Options.parse(Array(CommandLine.arguments.dropFirst()))
-    printResults(run(options: options), options: options)
+    printResults(try run(options: options), options: options)
 } catch {
     fputs("MemoryCacheBenchmark: \(error)\n", stderr)
     printUsage()

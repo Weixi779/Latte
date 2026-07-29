@@ -13,7 +13,7 @@ The default workload fixes:
 - 64 KiB `Data` values;
 - a deterministic 80% read / 20% write mixed workload;
 - a 60-second persisted access-touch interval;
-- three independent timed runs;
+- four independent timed runs;
 - median wall-clock duration.
 
 Each run owns a fresh subdirectory under the selected root. The executable
@@ -37,6 +37,21 @@ update in-memory recency without persisting modification time on every hit.
 Pass `--touch-interval 0` to measure the default `LRUFileCache` behavior where
 every successful hit attempts a persistent touch.
 
+Each run pairs the same deterministic input and operation order for both
+statistics modes. Even-numbered runs execute disabled then enabled;
+odd-numbered runs execute enabled then disabled. `cold-rebuild` follows the
+same ordering. Snapshot retrieval and correctness validation occur only after
+the timer stops; they therefore do not measure asynchronous getter
+serialization. The benchmark prints absolute latency and throughput for both
+modes, verifies matching checksums, and reports relative
+enabled-versus-disabled collection overhead with disabled as the baseline.
+
+Filesystem caching, scheduling, and background load can make short runs report
+negative relative overhead. Use multiple Release runs on the same declared
+filesystem before interpreting the comparison. `--runs` must be a positive even
+number so both modes receive the same number of first-position and
+second-position samples.
+
 Run a release build:
 
 ```sh
@@ -54,7 +69,7 @@ swift run -c release FileCacheBenchmark \
   --value-size 262144 \
   --read-ratio 0.90 \
   --touch-interval 0 \
-  --runs 5
+  --runs 6
 ```
 
 Temporary peak allocation from atomic writes remains part of the filesystem

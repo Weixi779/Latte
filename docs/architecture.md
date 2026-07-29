@@ -31,6 +31,26 @@ watchOS 9, and visionOS 1.
 Cost, capacity, TTL, TTI, admission results, durability, storage paths, and
 algorithm state remain concrete-cache capabilities.
 
+## statistics capability
+
+Statistics are an optional concrete-cache capability, not part of `Caching` or
+`AsyncCaching`:
+
+| capability | implementation | access |
+|---|---|---|
+| `CacheStatisticsProviding` | `LRUMemoryCache` | synchronous snapshot |
+| `AsyncCacheStatisticsProviding` | `LRUFileCache` | asynchronous snapshot |
+
+Collection is disabled by default and selected at construction. Disabled
+instances return `nil`; enabled instances return one coherent
+`CacheStatistics` snapshot containing request outcomes, capacity outcomes, and
+current residency.
+
+The accumulator stays inside the cache's existing synchronization owner.
+Residency is derived from authoritative cache state at snapshot time rather
+than maintained as a second counter. Statistics do not change the minimal
+behavior contracts or introduce a shared policy abstraction.
+
 ## ownership
 
 Each complete cache owns one coherent state machine:
@@ -100,6 +120,7 @@ Sources/Latte/
 ├── protocols/
 ├── memory/
 ├── file/
+├── statistics/
 └── support/
 ```
 
@@ -124,7 +145,7 @@ Latte 0.1.0 does not include:
 - file locking, manifests, journals, checkpoints, or database transactions;
 - encryption, compression, or `Codable` storage;
 - networking, HTTP caching, image decoding, UI, or Combine;
-- observability APIs.
+- persisted statistics, event streams, tracing, or external metrics exporters.
 
 ## evolution
 
@@ -145,4 +166,5 @@ inputs, not requirements.
 
 - Filesystem assumptions: [file metadata results](../probes/file-metadata/results.md)
 - Benchmark methodology: [benchmarks](../benchmarks/README.md)
+- Cache statistics design: [cache-statistics-plan.md](cache-statistics-plan.md)
 - File cache design: [file-cache.md](file-cache.md)

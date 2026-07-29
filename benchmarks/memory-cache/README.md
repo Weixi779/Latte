@@ -10,7 +10,7 @@ The default workload fixes:
 - 4,096 resident entries;
 - 8,192 possible keys;
 - 4 KiB `Data` values;
-- five independent timed runs;
+- six independent timed runs;
 - median wall-clock duration;
 - a deterministic 80% read / 15% write / 5% remove mixed workload.
 
@@ -22,6 +22,22 @@ The evicting-insert sequence rotates through the entire key space starting
 immediately after the prefilled range. Because `key-space` must be greater than
 `capacity`, every timed insertion is a miss against a full Cache and therefore
 causes one eviction.
+
+Every run executes both statistics modes with the same deterministic operation
+sequence. Even-numbered runs use disabled then enabled; odd-numbered runs use
+enabled then disabled. The output still treats disabled as the baseline.
+Snapshot retrieval and correctness validation happen after the timer stops.
+The output contains:
+
+- absolute median nanoseconds per operation and operations per second for each
+  mode;
+- disabled and enabled checksums, which must match;
+- relative enabled-versus-disabled collection overhead.
+
+Small smoke workloads are dominated by noise and can report negative relative
+overhead. Use the default Release workload, multiple runs, and controlled
+system load for overhead comparisons. `--runs` must be a positive even number
+so each mode has the same number of first-position and second-position samples.
 
 Run a release build:
 
@@ -37,7 +53,7 @@ swift run -c release MemoryCacheBenchmark \
   --capacity 8192 \
   --key-space 16384 \
   --value-size 65536 \
-  --runs 5
+  --runs 6
 ```
 
 The reported values are local measurements for the current machine, OS and
