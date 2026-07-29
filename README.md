@@ -3,6 +3,9 @@ A modern caching infrastructure for Swift across Apple platforms.
 
 Inspired by Caffeine, Moka, Ristretto, and cache2k, but not a port of them.
 
+Requires Swift 6 and iOS 16, macOS 13, Mac Catalyst 16, tvOS 16, watchOS 9,
+or visionOS 1.
+
 Latte 当前的产品方向、已接受边界与待验证问题见 [DIRECTION.md](DIRECTION.md)。
 
 V1 已提供 `Caching`、`AsyncCaching` 两种最小缓存协议，以及首个完整实现

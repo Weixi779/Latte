@@ -1,7 +1,7 @@
 # Latte：V1 方向与实施基线
 
-> 状态：实施中；公共协议、`LRUMemoryCache` 与 LRU 内部结构回收已完成，
-> `LRUFileCache` Stage 0 已通过，下一步进入文件与时间基础
+> 状态：实施中；公共协议、`LRUMemoryCache`、Stage 0 与 Stage B 基础已完成，
+> 下一步实现 `LRUFileCache` 启动恢复与基础 CRUD
 > 更新日期：2026-07-29
 
 ## 1. Latte 是什么

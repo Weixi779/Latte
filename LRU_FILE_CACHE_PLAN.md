@@ -1,6 +1,6 @@
 # LRUFileCache V1 实施计划
 
-> 状态：Stage 0、Stage A 已完成；下一步进入 Stage B
+> 状态：Stage 0、Stage A、Stage B 已完成；下一步进入 Stage C
 > 日期：2026-07-29
 > 主视角：状态所有权
 > 辅助视角：API 边界、失败语义与不必要复杂度
@@ -338,7 +338,8 @@ Foundation 会缓存 `URLResourceValues`。最终 URL 的 metadata helper 必须
 
 增加一个很窄的 package/internal 文件访问边界，仅服务：
 
-- 原子写；
+- 向 Latte 自有 staging URL 直接写入；
+- 通过 move / replace 原子发布；
 - Data 读取；
 - 目录枚举；
 - resource metadata 读取；
@@ -356,6 +357,12 @@ Foundation 会缓存 `URLResourceValues`。最终 URL 的 metadata helper 必须
 - 文件在操作间消失。
 
 这个 seam 不是 public Backend，不承载 Policy，也不能被用户自由组合。
+
+不得在 Cache 目录内使用 `Data.write(options: .atomic)`。Foundation 的 atomic
+write 会创建命名不受 Latte 控制的 auxiliary file，进程中断后可能与严格
+inventory 规则冲突。所有 marker 与 resident 写入必须先直接写到 Latte 生成的
+`.latte-tmp-*` URL，再通过 move / replace 发布；因此中断残留仍属于可证明、
+可分类和可清理的 artifact。
 
 ## 5. 操作状态机
 
@@ -576,12 +583,29 @@ Stage A 完成后，`LRUList` 只拥有 Key 与 recency。`LRUMemoryCache.State`
 
 ### Stage B：建立文件与时间基础
 
+完成于 2026-07-29：
+
 - 提升 Package 最低平台版本；
 - 增加 ownership marker、format version 与两阶段 inventory classification；
 - 增加 SHA-256 stable filename；
 - 增加 Foundation file access seam；
 - 增加可控 wall-clock seam；
 - 增加专用串行 I/O executor。
+
+Stage B 的所有类型保持 `package` 可见性：
+
+- `FileCacheFilename` 只接受稳定 Key material，输出 canonical lowercase SHA-256；
+- marker 固定 magic、Cache family 与 format version，不承载 resident 状态；
+- inventory classifier 完整分类后才返回结果，本身不执行删除；
+- Foundation seam 保留 throwing I/O 语义，并在每次 metadata 读取前清除
+  `URLResourceValues` 缓存；
+- 所有写入直接落到 `.latte-tmp-*` staging URL，再通过 move / replace 发布，
+  不依赖 Foundation 自行命名的 atomic-write auxiliary file；
+- wall-clock seam 允许测试注入时间，不依赖真实 sleep；
+- `FileCacheWorker` 使用实例专属串行队列，在 operation 完成后才恢复 continuation，
+  并在排队前传播任务取消。
+
+本阶段没有增加 public Backend、Storage 或 `LRUFileCache` CRUD。
 
 ### Stage C：实现启动恢复与基础 CRUD
 
@@ -751,5 +775,5 @@ V1 不提前加入 event、callback、metrics snapshot 或 miss reason。Cache �
 10. `LRUFileCache` 条件式提供 `@unchecked Sendable where Key: Sendable`；
 11. V2 才加入观测。
 
-Stage 0 的持久化模型已经再次确认，Stage A 已完成。下一实施边界是 Stage B
-的文件、身份与时间基础，不提前进入启动恢复和 CRUD。
+Stage 0 的持久化模型已经再次确认，Stage A 与 Stage B 已完成。下一实施边界是
+Stage C 的启动恢复与基础 CRUD，不提前加入容量水位和 expiration。
