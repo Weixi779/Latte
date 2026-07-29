@@ -265,9 +265,11 @@ struct FileCacheFoundationTests {
             return counts
         }
         let finalState = try await worker.perform { $0 }
+        let inspectedState = await worker.inspect { $0 }
 
         #expect(Set(counts) == Set(1...100))
         #expect(Set(finalState) == Set(0..<100))
+        #expect(Set(inspectedState) == Set(0..<100))
 
         let didExecute = LockedValue(false)
         let cancelled = Task {
@@ -289,6 +291,14 @@ struct FileCacheFoundationTests {
         let operationExecuted = didExecute.withLock { $0 }
         #expect(!operationExecuted)
 
+        let cancelledInspection = Task {
+            withUnsafeCurrentTask { task in
+                task?.cancel()
+            }
+            return await worker.inspect { $0.count }
+        }
+        #expect(await cancelledInspection.value == 100)
+
         do {
             let _: Int = try await worker.perform { _ in
                 throw FileCacheFoundationTestError.expected
@@ -297,6 +307,34 @@ struct FileCacheFoundationTests {
         } catch let error as FileCacheFoundationTestError {
             #expect(error == .expected)
         }
+    }
+
+    @Test("Inspection queues behind a preceding mutation")
+    func fileCacheWorkerInspectionOrdering() async throws {
+        let worker = FileCacheWorker(state: [Int]())
+        let mutationEntered = FileCacheAsyncSignal()
+        let allowMutationToFinish = DispatchSemaphore(value: 0)
+        let mutation = Task {
+            try await worker.perform { state in
+                Task {
+                    await mutationEntered.signal()
+                }
+                allowMutationToFinish.wait()
+                state.append(1)
+            }
+        }
+        await mutationEntered.wait()
+        let probe = FileCacheInspectionProbe()
+        let inspection = Task {
+            await probe.inspect(worker)
+        }
+        await probe.waitUntilStarted()
+        await Task.yield()
+
+        allowMutationToFinish.signal()
+
+        try await mutation.value
+        #expect(await inspection.value == [1])
     }
 
     private func markerData(
@@ -353,6 +391,41 @@ private struct FixedFileCacheWallClock: FileCacheWallClock {
 
     func now() -> Date {
         date
+    }
+}
+
+private actor FileCacheAsyncSignal {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isSignaled = false
+
+    func wait() async {
+        guard !isSignaled else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func signal() {
+        isSignaled = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private actor FileCacheInspectionProbe {
+    private var isStarted = false
+
+    func inspect(_ worker: FileCacheWorker<[Int]>) async -> [Int] {
+        isStarted = true
+        return await worker.inspect { $0 }
+    }
+
+    func waitUntilStarted() async {
+        while !isStarted {
+            await Task.yield()
+        }
     }
 }
 

@@ -9,6 +9,7 @@ import Foundation
 
 private protocol FileCacheRuntimeState: Sendable {
     mutating func start() throws
+    func statisticsSnapshot() -> CacheStatistics?
     mutating func value(
         for filename: FileCacheFilename
     ) throws -> Data?
@@ -48,7 +49,10 @@ public enum LRUFileCacheError: Error, Equatable, Sendable {
 /// Capacity is an observed soft limit based on each resident's allocated file
 /// size, with logical size as a fallback. Expiration is instance-wide and is
 /// cleaned opportunistically during startup, lookup, and insertion.
-public final class LRUFileCache<Key: Hashable>: AsyncCaching {
+public final class LRUFileCache<Key: Hashable>:
+    AsyncCaching,
+    AsyncCacheStatisticsProviding
+{
     public typealias Value = Data
 
     /// Produces deterministic key material used to derive a resident filename.
@@ -145,6 +149,7 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
         var recency = LRUList<FileCacheFilename>()
         var observedDiskUsage = 0
         var isAvailable = true
+        var statistics: CacheStatisticsAccumulator?
 
         mutating func start() throws {
             try fileAccess.createDirectory(at: directory)
@@ -169,11 +174,22 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
             let now = wallClock.now()
             try removeExpiredResidents(now: now)
             try trimToLowWatermarkIfNeeded(protecting: nil)
+            statistics = configuration.isStatisticsEnabled
+                ? CacheStatisticsAccumulator()
+                : nil
+        }
+
+        func statisticsSnapshot() -> CacheStatistics? {
+            statistics?.snapshot(
+                residentCount: residents.count,
+                residentCost: observedDiskUsage
+            )
         }
 
         mutating func value(for filename: FileCacheFilename) throws -> Data? {
             try requireAvailable()
             guard var resident = residents[filename] else {
+                statistics?.recordMiss()
                 return nil
             }
 
@@ -187,6 +203,7 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
                         forgetResident(filename)
                     }
                 }
+                statistics?.recordMiss()
                 return nil
             }
 
@@ -196,6 +213,7 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
             } catch {
                 if isMissingFileError(error) {
                     forgetResident(filename)
+                    statistics?.recordMiss()
                     return nil
                 }
                 throw error
@@ -211,6 +229,7 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
                 } catch {
                     if isMissingFileError(error) {
                         forgetResident(filename)
+                        statistics?.recordHit()
                         return data
                     }
                 }
@@ -219,6 +238,7 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
             resident.lastAccessDate = now
             residents[filename] = resident
             recency.moveToMostRecent(filename)
+            statistics?.recordHit()
             return data
         }
 
@@ -231,6 +251,7 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
                   !hasImmediateExpiration,
                   data.count <= highWatermarkLimit
             else {
+                statistics?.recordRejection()
                 return
             }
 
@@ -262,6 +283,7 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
                         at: temporaryURL,
                         name: temporaryName
                     )
+                    statistics?.recordRejection()
                     return
                 }
 
@@ -311,6 +333,7 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
                     filename,
                     at: destination
                 )
+                statistics?.recordRejection()
                 return
             }
 
@@ -766,9 +789,13 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
                 do {
                     try fileAccess.removeItem(at: resident.url)
                     forgetResident(victim)
+                    statistics?.recordEviction(cost: resident.allocatedSize)
                 } catch {
                     if isMissingFileError(error) {
                         forgetResident(victim)
+                        statistics?.recordEviction(
+                            cost: resident.allocatedSize
+                        )
                     } else {
                         throw error
                     }
@@ -924,6 +951,14 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
 
         self.stableKeyEncoder = stableKeyEncoder
         self.worker = worker
+    }
+
+    public var statistics: CacheStatistics? {
+        get async {
+            await worker.inspect { state in
+                state.statisticsSnapshot()
+            }
+        }
     }
 
     public func value(for key: Key) async throws -> Data? {

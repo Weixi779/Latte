@@ -36,4 +36,14 @@ package final class FileCacheWorker<State>: @unchecked Sendable {
             }
         }
     }
+
+    package func inspect<Output: Sendable>(
+        _ operation: @escaping @Sendable (State) -> Output
+    ) async -> Output {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                continuation.resume(returning: operation(state))
+            }
+        }
+    }
 }

@@ -11,6 +11,225 @@ import Testing
 
 @Suite("LRU file cache")
 struct LRUFileCacheTests {
+    @Test("File statistics distinguish disabled and enabled caches")
+    func statisticsAvailabilityAndOutcomes() async throws {
+        let disabledDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: disabledDirectory) }
+        let disabled = try await makeCache(at: disabledDirectory)
+        #expect(await disabled.statistics == nil)
+
+        let enabledDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: enabledDirectory) }
+        let access = MetadataAdaptingFileCacheAccess(
+            sizeMode: .logicalAsAllocated
+        )
+        let enabled = try await makeCache(
+            at: enabledDirectory,
+            configuration: .init(
+                maximumDiskUsage: 100,
+                highWatermark: 1,
+                isStatisticsEnabled: true
+            ),
+            fileAccess: access,
+            wallClock: TestFileCacheWallClock()
+        )
+        let value = Data(repeating: 1, count: 4)
+
+        #expect(await enabled.statistics == CacheStatistics())
+        #expect(try await enabled.value(for: "missing") == nil)
+        try await enabled.insert(value, for: "key")
+        #expect(try await enabled.value(for: "key") == value)
+        #expect(
+            await enabled.statistics == CacheStatistics(
+                hitCount: 1,
+                missCount: 1,
+                residentCount: 1,
+                residentCost: 4
+            )
+        )
+    }
+
+    @Test("Propagated lookup errors do not record a request outcome")
+    func propagatedLookupErrorIsNotARequest() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let faultingAccess = FaultInjectingFileCacheAccess()
+        let access = MetadataAdaptingFileCacheAccess(
+            base: faultingAccess,
+            sizeMode: .logicalAsAllocated
+        )
+        let cache = try await makeCache(
+            at: directory,
+            configuration: .init(
+                maximumDiskUsage: 100,
+                highWatermark: 1,
+                isStatisticsEnabled: true
+            ),
+            fileAccess: access,
+            wallClock: TestFileCacheWallClock()
+        )
+        let value = Data(repeating: 1, count: 4)
+        try await cache.insert(value, for: "key")
+        faultingAccess.failNext(.readData)
+
+        await #expect(throws: InjectedFileCacheError.expected) {
+            _ = try await cache.value(for: "key")
+        }
+        #expect(
+            await cache.statistics == CacheStatistics(
+                residentCount: 1,
+                residentCost: 4
+            )
+        )
+
+        #expect(try await cache.value(for: "key") == value)
+        #expect(
+            await cache.statistics == CacheStatistics(
+                hitCount: 1,
+                residentCount: 1,
+                residentCost: 4
+            )
+        )
+    }
+
+    @Test("An externally removed resident becomes a miss")
+    func externallyRemovedResidentStatistics() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let access = MetadataAdaptingFileCacheAccess(
+            sizeMode: .logicalAsAllocated
+        )
+        let cache = try await makeCache(
+            at: directory,
+            configuration: .init(
+                maximumDiskUsage: 100,
+                highWatermark: 1,
+                isStatisticsEnabled: true
+            ),
+            fileAccess: access,
+            wallClock: TestFileCacheWallClock()
+        )
+        let filename = FileCacheFilename(
+            stableKeyMaterial: Data("key".utf8)
+        )
+        try await cache.insert(Data(repeating: 1, count: 4), for: "key")
+        try FileManager.default.removeItem(
+            at: directory.appendingPathComponent(filename.rawValue)
+        )
+
+        #expect(try await cache.value(for: "key") == nil)
+        #expect(
+            await cache.statistics == CacheStatistics(
+                missCount: 1
+            )
+        )
+    }
+
+    @Test("A resident disappearing during touch remains a hit")
+    func residentDisappearingDuringTouchStatistics() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let faultingAccess = FaultInjectingFileCacheAccess()
+        let access = MetadataAdaptingFileCacheAccess(
+            base: faultingAccess,
+            sizeMode: .logicalAsAllocated
+        )
+        let cache = try await makeCache(
+            at: directory,
+            configuration: .init(
+                maximumDiskUsage: 100,
+                highWatermark: 1,
+                isStatisticsEnabled: true
+            ),
+            fileAccess: access,
+            wallClock: TestFileCacheWallClock()
+        )
+        let value = Data(repeating: 1, count: 4)
+        try await cache.insert(value, for: "key")
+        faultingAccess.removeBeforeNextModificationDate()
+
+        #expect(try await cache.value(for: "key") == value)
+        #expect(
+            await cache.statistics == CacheStatistics(
+                hitCount: 1
+            )
+        )
+    }
+
+    @Test("Recovered residency starts with a fresh counter epoch")
+    func recoveredStatisticsStartAtZero() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let access = MetadataAdaptingFileCacheAccess(
+            sizeMode: .logicalAsAllocated
+        )
+        let configuration = LRUFileCache<String>.Configuration(
+            maximumDiskUsage: 100,
+            highWatermark: 1,
+            isStatisticsEnabled: true
+        )
+
+        do {
+            let original = try await makeCache(
+                at: directory,
+                configuration: configuration,
+                fileAccess: access,
+                wallClock: TestFileCacheWallClock()
+            )
+            try await original.insert(Data(repeating: 1, count: 3), for: "a")
+            try await original.insert(Data(repeating: 2, count: 4), for: "b")
+            #expect(try await original.value(for: "a") != nil)
+            #expect((await original.statistics)?.hitCount == 1)
+        }
+
+        let recovered = try await makeCache(
+            at: directory,
+            configuration: configuration,
+            fileAccess: access,
+            wallClock: TestFileCacheWallClock()
+        )
+
+        #expect(
+            await recovered.statistics == CacheStatistics(
+                residentCount: 2,
+                residentCost: 7
+            )
+        )
+    }
+
+    @Test("Explicit file removals are not capacity evictions")
+    func explicitRemovalStatistics() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let access = MetadataAdaptingFileCacheAccess(
+            sizeMode: .logicalAsAllocated
+        )
+        let cache = try await makeCache(
+            at: directory,
+            configuration: .init(
+                maximumDiskUsage: 100,
+                highWatermark: 1,
+                isStatisticsEnabled: true
+            ),
+            fileAccess: access,
+            wallClock: TestFileCacheWallClock()
+        )
+        try await cache.insert(Data(repeating: 1, count: 3), for: "a")
+        try await cache.insert(Data(repeating: 2, count: 4), for: "b")
+        #expect(try await cache.value(for: "a") != nil)
+        #expect(try await cache.value(for: "missing") == nil)
+
+        try await cache.removeValue(for: "a")
+        try await cache.removeAll()
+
+        #expect(
+            await cache.statistics == CacheStatistics(
+                hitCount: 1,
+                missCount: 1
+            )
+        )
+    }
+
     @Test("Basic CRUD preserves the ownership marker")
     func basicCRUD() async throws {
         let directory = try makeTemporaryDirectory()
@@ -253,14 +472,21 @@ struct LRUFileCacheTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let cache = try await LRUFileCache<String>(
             directory: directory,
-            configuration: configuration
+            configuration: .init(
+                maximumDiskUsage: .max,
+                isStatisticsEnabled: true
+            )
         ) { _ in
             throw LRUFileCacheTestError.encoding
         }
 
         await #expect(throws: LRUFileCacheTestError.encoding) {
+            _ = try await cache.value(for: "key")
+        }
+        await #expect(throws: LRUFileCacheTestError.encoding) {
             try await cache.insert(Data(), for: "key")
         }
+        #expect(await cache.statistics == CacheStatistics())
         #expect(try directoryItemNames(in: directory) == [
             FileCacheLayout.markerFilename
         ])
@@ -455,7 +681,10 @@ struct LRUFileCacheTests {
         )
         let cache = try await makeCache(
             at: directory,
-            configuration: .init(maximumDiskUsage: 100),
+            configuration: .init(
+                maximumDiskUsage: 100,
+                isStatisticsEnabled: true
+            ),
             fileAccess: access,
             wallClock: TestFileCacheWallClock()
         )
@@ -470,6 +699,7 @@ struct LRUFileCacheTests {
         await #expect(throws: LRUFileCacheError.unavailable) {
             _ = try await cache.value(for: "candidate")
         }
+        #expect(await cache.statistics == CacheStatistics())
     }
 
     @Test("A staging cleanup failure makes the instance unavailable")
@@ -499,7 +729,8 @@ struct LRUFileCacheTests {
             at: directory,
             configuration: .init(
                 maximumDiskUsage: .max,
-                accessTimeUpdateInterval: .seconds(60)
+                accessTimeUpdateInterval: .seconds(60),
+                isStatisticsEnabled: true
             ),
             fileAccess: access,
             wallClock: clock
@@ -517,6 +748,8 @@ struct LRUFileCacheTests {
 
         #expect(try await cache.value(for: "key") == value)
         #expect(access.callCount(for: .setModificationDate) == 3)
+        #expect((await cache.statistics)?.hitCount == 3)
+        #expect((await cache.statistics)?.missCount == 0)
     }
 
     @Test("A zero touch interval persists every hit")
@@ -579,7 +812,8 @@ struct LRUFileCacheTests {
             configuration: .init(
                 maximumDiskUsage: 10,
                 lowWatermark: 0.5,
-                highWatermark: 1
+                highWatermark: 1,
+                isStatisticsEnabled: true
             ),
             fileAccess: access,
             wallClock: TestFileCacheWallClock()
@@ -590,6 +824,15 @@ struct LRUFileCacheTests {
         _ = try await cache.value(for: "a")
         try await cache.insert(Data(repeating: 3, count: 3), for: "c")
 
+        #expect(
+            await cache.statistics == CacheStatistics(
+                hitCount: 1,
+                evictionCount: 2,
+                evictedCost: 8,
+                residentCount: 1,
+                residentCost: 3
+            )
+        )
         #expect(try await cache.value(for: "a") == nil)
         #expect(try await cache.value(for: "b") == nil)
         #expect(try await cache.value(for: "c") != nil)
@@ -633,7 +876,10 @@ struct LRUFileCacheTests {
         )
         let cache = try await makeCache(
             at: directory,
-            configuration: .init(maximumDiskUsage: 100),
+            configuration: .init(
+                maximumDiskUsage: 100,
+                isStatisticsEnabled: true
+            ),
             fileAccess: access,
             wallClock: TestFileCacheWallClock()
         )
@@ -645,6 +891,8 @@ struct LRUFileCacheTests {
             for: "key"
         )
 
+        #expect((await cache.statistics)?.rejectionCount == 1)
+        #expect((await cache.statistics)?.residentCount == 1)
         #expect(try await cache.value(for: "key") == oldValue)
     }
 
@@ -657,7 +905,10 @@ struct LRUFileCacheTests {
         )
         let cache = try await makeCache(
             at: directory,
-            configuration: .init(maximumDiskUsage: 100),
+            configuration: .init(
+                maximumDiskUsage: 100,
+                isStatisticsEnabled: true
+            ),
             fileAccess: access,
             wallClock: TestFileCacheWallClock()
         )
@@ -667,10 +918,91 @@ struct LRUFileCacheTests {
             for: "candidate"
         )
 
+        #expect(
+            await cache.statistics == CacheStatistics(
+                rejectionCount: 1
+            )
+        )
         #expect(try await cache.value(for: "candidate") == nil)
         #expect(try directoryItemNames(in: directory) == [
             FileCacheLayout.markerFilename
         ])
+    }
+
+    @Test("Oversized staging metadata is a normal rejection")
+    func stagingAllocatedSizeRejectsCandidate() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let access = MetadataAdaptingFileCacheAccess(
+            sizeMode: .temporaryOverhead(20)
+        )
+        let cache = try await makeCache(
+            at: directory,
+            configuration: .init(
+                maximumDiskUsage: 100,
+                highWatermark: 1,
+                isStatisticsEnabled: true
+            ),
+            fileAccess: access,
+            wallClock: TestFileCacheWallClock()
+        )
+
+        try await cache.insert(
+            Data(repeating: 1, count: 90),
+            for: "candidate"
+        )
+
+        #expect(
+            await cache.statistics == CacheStatistics(
+                rejectionCount: 1
+            )
+        )
+        #expect(try directoryItemNames(in: directory) == [
+            FileCacheLayout.markerFilename
+        ])
+    }
+
+    @Test("Configuration-based insertions are normal rejections")
+    func configurationRejectionStatistics() async throws {
+        let scenarios: [(String, LRUFileCache<String>.Configuration)] = [
+            (
+                "zero-capacity",
+                .init(
+                    maximumDiskUsage: 0,
+                    isStatisticsEnabled: true
+                )
+            ),
+            (
+                "immediate-expiration",
+                .init(
+                    maximumDiskUsage: 100,
+                    timeToLive: .zero,
+                    isStatisticsEnabled: true
+                )
+            ),
+        ]
+        let access = MetadataAdaptingFileCacheAccess(
+            sizeMode: .logicalAsAllocated
+        )
+
+        for (name, configuration) in scenarios {
+            let directory = try makeTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let cache = try await makeCache(
+                at: directory,
+                configuration: configuration,
+                fileAccess: access,
+                wallClock: TestFileCacheWallClock()
+            )
+
+            try await cache.insert(Data([1]), for: name)
+
+            #expect(
+                await cache.statistics == CacheStatistics(
+                    rejectionCount: 1
+                )
+            )
+        }
     }
 
     @Test("An overwrite replaces its contribution to observed usage")
@@ -685,7 +1017,8 @@ struct LRUFileCacheTests {
             configuration: .init(
                 maximumDiskUsage: 10,
                 lowWatermark: 0.5,
-                highWatermark: 1
+                highWatermark: 1,
+                isStatisticsEnabled: true
             ),
             fileAccess: access,
             wallClock: TestFileCacheWallClock()
@@ -695,6 +1028,12 @@ struct LRUFileCacheTests {
         try await cache.insert(Data(repeating: 2, count: 3), for: "b")
         try await cache.insert(Data(repeating: 3, count: 2), for: "a")
 
+        #expect(
+            await cache.statistics == CacheStatistics(
+                residentCount: 2,
+                residentCost: 5
+            )
+        )
         #expect(try await cache.value(for: "a") != nil)
         #expect(try await cache.value(for: "b") != nil)
     }
@@ -733,12 +1072,19 @@ struct LRUFileCacheTests {
             configuration: .init(
                 maximumDiskUsage: 10,
                 lowWatermark: 0.5,
-                highWatermark: 1
+                highWatermark: 1,
+                isStatisticsEnabled: true
             ),
             fileAccess: access,
             wallClock: TestFileCacheWallClock()
         )
 
+        #expect(
+            await bounded.statistics == CacheStatistics(
+                residentCount: 1,
+                residentCost: 4
+            )
+        )
         #expect(try await bounded.value(for: "a") == nil)
         #expect(try await bounded.value(for: "b") == nil)
         #expect(try await bounded.value(for: "c") != nil)
@@ -800,6 +1146,89 @@ struct LRUFileCacheTests {
         #expect(try await cache.value(for: "c") == c)
     }
 
+    @Test("Completed victims survive a later trim failure in statistics")
+    func partialTrimFailureStatistics() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let faultingAccess = FaultInjectingFileCacheAccess()
+        let access = MetadataAdaptingFileCacheAccess(
+            base: faultingAccess,
+            sizeMode: .logicalAsAllocated
+        )
+        let cache = try await makeCache(
+            at: directory,
+            configuration: .init(
+                maximumDiskUsage: 10,
+                lowWatermark: 0.5,
+                highWatermark: 1,
+                isStatisticsEnabled: true
+            ),
+            fileAccess: access,
+            wallClock: TestFileCacheWallClock()
+        )
+        try await cache.insert(Data(repeating: 1, count: 4), for: "a")
+        try await cache.insert(Data(repeating: 2, count: 4), for: "b")
+        faultingAccess.failAfter(.removeItem, successfulCalls: 1)
+
+        await #expect(throws: InjectedFileCacheError.expected) {
+            try await cache.insert(
+                Data(repeating: 3, count: 3),
+                for: "c"
+            )
+        }
+
+        #expect(
+            await cache.statistics == CacheStatistics(
+                evictionCount: 1,
+                evictedCost: 4,
+                residentCount: 2,
+                residentCost: 7
+            )
+        )
+    }
+
+    @Test("A missing selected victim still records an eviction")
+    func missingTrimVictimStatistics() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let access = MetadataAdaptingFileCacheAccess(
+            sizeMode: .logicalAsAllocated
+        )
+        let cache = try await makeCache(
+            at: directory,
+            configuration: .init(
+                maximumDiskUsage: 10,
+                lowWatermark: 0.5,
+                highWatermark: 1,
+                isStatisticsEnabled: true
+            ),
+            fileAccess: access,
+            wallClock: TestFileCacheWallClock()
+        )
+        try await cache.insert(Data(repeating: 1, count: 4), for: "a")
+        try await cache.insert(Data(repeating: 2, count: 4), for: "b")
+        let filename = FileCacheFilename(
+            stableKeyMaterial: Data("a".utf8)
+        )
+        try FileManager.default.removeItem(
+            at: directory.appendingPathComponent(filename.rawValue)
+        )
+
+        try await cache.insert(
+            Data(repeating: 3, count: 3),
+            for: "c"
+        )
+
+        #expect(
+            await cache.statistics == CacheStatistics(
+                evictionCount: 2,
+                evictedCost: 8,
+                residentCount: 1,
+                residentCost: 3
+            )
+        )
+    }
+
     @Test("TTL expires from the latest successful write")
     func timeToLiveExpiration() async throws {
         let directory = try makeTemporaryDirectory()
@@ -842,7 +1271,8 @@ struct LRUFileCacheTests {
             at: directory,
             configuration: .init(
                 maximumDiskUsage: .max,
-                timeToLive: .seconds(10)
+                timeToLive: .seconds(10),
+                isStatisticsEnabled: true
             ),
             fileAccess: access,
             wallClock: clock
@@ -855,6 +1285,8 @@ struct LRUFileCacheTests {
         #expect(try await cache.value(for: "key") == nil)
         #expect(faultingAccess.callCount(for: .removeItem) == 2)
         #expect(try await cache.value(for: "key") == nil)
+        #expect((await cache.statistics)?.missCount == 3)
+        #expect((await cache.statistics)?.evictionCount == 0)
     }
 
     @Test("A hit refreshes in-process TTI without sleeping")
@@ -1192,6 +1624,7 @@ private enum InjectedFileCacheError: Error, Equatable {
 
 private enum FileCacheAccessOperation: Hashable {
     case contentsOfDirectory
+    case readData
     case writeStagingData
     case metadata
     case setModificationDate
@@ -1211,6 +1644,7 @@ private final class FaultInjectingFileCacheAccess:
     private let callCounts = LockedValue(
         [FileCacheAccessOperation: Int]()
     )
+    private let removesBeforeModificationDate = LockedValue(0)
 
     func failNext(_ operation: FileCacheAccessOperation) {
         failures.withLock { failures in
@@ -1232,6 +1666,10 @@ private final class FaultInjectingFileCacheAccess:
         callCounts.withLock { $0[operation, default: 0] }
     }
 
+    func removeBeforeNextModificationDate() {
+        removesBeforeModificationDate.withLock { $0 += 1 }
+    }
+
     func createDirectory(at url: URL) throws {
         try foundation.createDirectory(at: url)
     }
@@ -1243,7 +1681,9 @@ private final class FaultInjectingFileCacheAccess:
     }
 
     func readData(at url: URL) throws -> Data {
-        try foundation.readData(at: url)
+        recordCall(to: .readData)
+        try consumeFailure(for: .readData)
+        return try foundation.readData(at: url)
     }
 
     func writeStagingData(_ data: Data, to url: URL) throws {
@@ -1269,6 +1709,16 @@ private final class FaultInjectingFileCacheAccess:
     func setModificationDate(_ date: Date, at url: URL) throws {
         recordCall(to: .setModificationDate)
         try consumeFailure(for: .setModificationDate)
+        let shouldRemove = removesBeforeModificationDate.withLock { count in
+            guard count > 0 else {
+                return false
+            }
+            count -= 1
+            return true
+        }
+        if shouldRemove {
+            try foundation.removeItem(at: url)
+        }
         try foundation.setModificationDate(date, at: url)
     }
 
@@ -1384,6 +1834,7 @@ private enum MetadataSizeMode: Sendable {
     case logicalAsAllocated
     case logicalFallback
     case residentOverhead(Int)
+    case temporaryOverhead(Int)
 }
 
 private struct MetadataAdaptingFileCacheAccess: FileCacheFileAccess {
@@ -1440,6 +1891,14 @@ private struct MetadataAdaptingFileCacheAccess: FileCacheFileAccess {
             if FileCacheFilename(
                 residentFilename: url.lastPathComponent
             ) != nil, let logicalSize = metadata.logicalSize {
+                allocatedSize = logicalSize + overhead
+            } else {
+                allocatedSize = metadata.logicalSize
+            }
+        case let .temporaryOverhead(overhead):
+            if FileCacheLayout.isTemporaryArtifactFilename(
+                url.lastPathComponent
+            ), let logicalSize = metadata.logicalSize {
                 allocatedSize = logicalSize + overhead
             } else {
                 allocatedSize = metadata.logicalSize
