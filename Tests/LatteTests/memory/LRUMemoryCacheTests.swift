@@ -11,6 +11,158 @@ import Testing
 
 @Suite("LRUMemoryCache")
 struct LRUMemoryCacheTests {
+    @Test("Statistics distinguish disabled and enabled caches")
+    func statisticsAvailability() {
+        let disabled = LRUMemoryCache<String, Int>(
+            configuration: .init(maximumCost: 1)
+        )
+        let enabled = LRUMemoryCache<String, Int>(
+            configuration: .init(
+                maximumCost: 1,
+                isStatisticsEnabled: true
+            )
+        )
+
+        #expect(disabled.statistics == nil)
+        #expect(enabled.statistics == CacheStatistics())
+    }
+
+    @Test("Statistics record lookup outcomes and current residency")
+    func lookupStatistics() {
+        let cache = LRUMemoryCache<String, Int>(
+            configuration: .init(
+                maximumCost: 2,
+                isStatisticsEnabled: true
+            )
+        )
+        cache.insert(1, for: "a")
+
+        #expect(cache.value(for: "a") == 1)
+        #expect(cache.value(for: "missing") == nil)
+        #expect(
+            cache.statistics == CacheStatistics(
+                hitCount: 1,
+                missCount: 1,
+                residentCount: 1,
+                residentCost: 1
+            )
+        )
+    }
+
+    @Test("Oversized candidates are rejections")
+    func rejectionStatistics() {
+        let cache = LRUMemoryCache<String, Int>(
+            configuration: .init(
+                maximumCost: 5,
+                isStatisticsEnabled: true,
+                weigher: { _, value in value }
+            )
+        )
+        cache.insert(3, for: "a")
+
+        cache.insert(6, for: "a")
+
+        #expect(
+            cache.statistics == CacheStatistics(
+                rejectionCount: 1,
+                residentCount: 1,
+                residentCost: 3
+            )
+        )
+    }
+
+    @Test("Capacity victims contribute their count and cost")
+    func evictionStatistics() {
+        let cache = LRUMemoryCache<String, Int>(
+            configuration: .init(
+                maximumCost: 10,
+                isStatisticsEnabled: true,
+                weigher: { _, value in value }
+            )
+        )
+        cache.insert(2, for: "a")
+        cache.insert(3, for: "b")
+        cache.insert(4, for: "c")
+
+        cache.insert(8, for: "d")
+
+        #expect(
+            cache.statistics == CacheStatistics(
+                evictionCount: 3,
+                evictedCost: 9,
+                residentCount: 1,
+                residentCost: 8
+            )
+        )
+    }
+
+    @Test("Replacement and explicit removal are not evictions")
+    func nonEvictionRemovalStatistics() {
+        let cache = LRUMemoryCache<String, Int>(
+            configuration: .init(
+                maximumCost: 10,
+                isStatisticsEnabled: true,
+                weigher: { _, value in value }
+            )
+        )
+        cache.insert(2, for: "a")
+        cache.insert(3, for: "b")
+        cache.insert(4, for: "a")
+        #expect(cache.value(for: "a") == 4)
+        #expect(cache.value(for: "missing") == nil)
+        cache.removeValue(for: "b")
+
+        #expect(
+            cache.statistics == CacheStatistics(
+                hitCount: 1,
+                missCount: 1,
+                residentCount: 1,
+                residentCost: 4
+            )
+        )
+
+        cache.removeAll()
+
+        #expect(
+            cache.statistics == CacheStatistics(
+                hitCount: 1,
+                missCount: 1
+            )
+        )
+    }
+
+    @Test("Concurrent lookup statistics remain coherent")
+    func concurrentStatistics() {
+        let count = 1_000
+        let cache = LRUMemoryCache<Int, Int>(
+            configuration: .init(
+                maximumCost: count,
+                isStatisticsEnabled: true
+            )
+        )
+
+        DispatchQueue.concurrentPerform(iterations: count) { key in
+            cache.insert(key, for: key)
+        }
+        DispatchQueue.concurrentPerform(iterations: count) { key in
+            #expect(cache.value(for: key) == key)
+            #expect(cache.value(for: key + count) == nil)
+            if key.isMultiple(of: 100) {
+                #expect(cache.statistics?.residentCount == count)
+                #expect(cache.statistics?.residentCost == count)
+            }
+        }
+
+        #expect(
+            cache.statistics == CacheStatistics(
+                hitCount: UInt64(count),
+                missCount: UInt64(count),
+                residentCount: count,
+                residentCost: count
+            )
+        )
+    }
+
     @Test("A hit refreshes recency")
     func hitRefreshesRecency() {
         let cache = LRUMemoryCache<String, Int>(
@@ -157,14 +309,29 @@ struct LRUMemoryCacheTests {
         #expect(cache.value(for: 42) == 42)
     }
 
-    @Test("Mixed concurrent operations preserve state coherence")
-    func mixedConcurrentOperations() {
+    @Test("Mixed concurrent operations and snapshots preserve state coherence")
+    func mixedConcurrentOperations() throws {
         let keyCount = 8
+        let operationCount = 20_000
         let cache = LRUMemoryCache<Int, Int>(
-            configuration: .init(maximumCost: 4)
+            configuration: .init(
+                maximumCost: 4,
+                isStatisticsEnabled: true
+            )
         )
+        let expectedMixedRequestCount =
+            (0..<operationCount).reduce(0) { count, iteration in
+                switch iteration % 7 {
+                case 2, 3, 6:
+                    count + 1
+                default:
+                    count
+                }
+            }
 
-        DispatchQueue.concurrentPerform(iterations: 20_000) { iteration in
+        DispatchQueue.concurrentPerform(
+            iterations: operationCount
+        ) { iteration in
             let key = iteration % keyCount
 
             switch iteration % 7 {
@@ -180,6 +347,20 @@ struct LRUMemoryCacheTests {
                 cache.insert(key, for: key)
                 _ = cache.value(for: key)
             }
+
+            if iteration.isMultiple(of: 97) {
+                let statistics = cache.statistics
+                #expect(statistics != nil)
+                if let statistics {
+                    #expect(
+                        statistics.residentCount == statistics.residentCost
+                    )
+                    #expect(statistics.residentCost <= 4)
+                    #expect(
+                        statistics.evictionCount == statistics.evictedCost
+                    )
+                }
+            }
         }
 
         cache.removeAll()
@@ -191,6 +372,17 @@ struct LRUMemoryCacheTests {
         for key in 1..<5 {
             #expect(cache.value(for: key) == key)
         }
+
+        let statistics = try #require(cache.statistics)
+        #expect(
+            statistics.requestCount ==
+                UInt64(expectedMixedRequestCount + 5)
+        )
+        #expect(statistics.evictionCount > 0)
+        #expect(statistics.evictionCount == statistics.evictedCost)
+        #expect(statistics.rejectionCount == 0)
+        #expect(statistics.residentCount == 4)
+        #expect(statistics.residentCost == 4)
     }
 
     @Test("Matches a reference cache across 20,000 seeded operations")
@@ -259,7 +451,10 @@ struct LRUMemoryCacheTests {
         let didDeinitialize = DispatchSemaphore(value: 0)
         let didFinishOperation = DispatchSemaphore(value: 0)
         let cache = LRUMemoryCache<String, ReentrantValue>(
-            configuration: .init(maximumCost: 1)
+            configuration: .init(
+                maximumCost: 1,
+                isStatisticsEnabled: true
+            )
         )
         cache.insert(
             ReentrantValue {
@@ -297,7 +492,10 @@ struct LRUMemoryCacheTests {
         let didDeinitialize = DispatchSemaphore(value: 0)
         let didFinishOperation = DispatchSemaphore(value: 0)
         let cache = LRUMemoryCache<ReentrantKey, Int>(
-            configuration: .init(maximumCost: 1)
+            configuration: .init(
+                maximumCost: 1,
+                isStatisticsEnabled: true
+            )
         )
 
         func insertResident() {

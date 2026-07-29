@@ -9,7 +9,10 @@
 ///
 /// Lookups refresh recency. Insertions can evict one or more least-recently
 /// used values until the configured cost budget is satisfied.
-public final class LRUMemoryCache<Key: Hashable, Value>: Caching {
+public final class LRUMemoryCache<Key: Hashable, Value>:
+    Caching,
+    CacheStatisticsProviding
+{
     /// Construction-time settings for an ``LRUMemoryCache``.
     public struct Configuration {
         /// Computes the nonnegative cost recorded for a value at insertion.
@@ -99,6 +102,13 @@ public final class LRUMemoryCache<Key: Hashable, Value>: Caching {
         var entries: [Key: Entry] = [:]
         var recency = LRUList<Key>()
         var totalCost = 0
+        var statistics: CacheStatisticsAccumulator?
+
+        init(isStatisticsEnabled: Bool) {
+            self.statistics = isStatisticsEnabled
+                ? CacheStatisticsAccumulator()
+                : nil
+        }
     }
 
     private let configuration: Configuration
@@ -107,12 +117,24 @@ public final class LRUMemoryCache<Key: Hashable, Value>: Caching {
     /// Creates an empty cache.
     public init(configuration: Configuration) {
         self.configuration = configuration
-        self.state = LockedValue(State())
+        self.state = LockedValue(
+            State(isStatisticsEnabled: configuration.isStatisticsEnabled)
+        )
+    }
+
+    public var statistics: CacheStatistics? {
+        state.withLock { state in
+            state.statistics?.snapshot(
+                residentCount: state.entries.count,
+                residentCost: state.totalCost
+            )
+        }
     }
 
     public func value(for key: Key) -> Value? {
         state.withLock { state in
             guard let entry = state.entries[key] else {
+                state.statistics?.recordMiss()
                 return nil
             }
 
@@ -120,6 +142,7 @@ public final class LRUMemoryCache<Key: Hashable, Value>: Caching {
                 state.recency.moveToMostRecent(key),
                 "LRU metadata is missing for a resident value"
             )
+            state.statistics?.recordHit()
             return entry.value
         }
     }
@@ -128,6 +151,11 @@ public final class LRUMemoryCache<Key: Hashable, Value>: Caching {
         let cost = configuration.cost(for: key, value: value)
         precondition(cost >= 0, "Cache entry cost must not be negative")
         guard cost <= configuration.maximumCost else {
+            if configuration.isStatisticsEnabled {
+                state.withLock { state in
+                    state.statistics?.recordRejection()
+                }
+            }
             return
         }
 
@@ -155,6 +183,7 @@ public final class LRUMemoryCache<Key: Hashable, Value>: Caching {
                 }
 
                 state.totalCost -= victim.cost
+                state.statistics?.recordEviction(cost: victim.cost)
                 retiredEntries.append(victim)
             }
 
