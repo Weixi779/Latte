@@ -10,7 +10,7 @@
 /// `LRUList` owns only identity and recency. Capacity, cost, expiration,
 /// admission, and value residency belong to the complete Cache using it.
 package struct LRUList<Key: Hashable> {
-    private struct Node {
+    fileprivate struct Node {
         let key: Key
         var previous: Int?
         var next: Int?
@@ -151,3 +151,6 @@ package struct LRUList<Key: Hashable> {
         nodes[index]!.next = nil
     }
 }
+
+extension LRUList.Node: Sendable where Key: Sendable {}
+extension LRUList: Sendable where Key: Sendable {}

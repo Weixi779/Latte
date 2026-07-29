@@ -1,6 +1,6 @@
 # LRUFileCache V1 实施计划
 
-> 状态：Stage 0、Stage A、Stage B 已完成；下一步进入 Stage C
+> 状态：Stage 0、Stage A、Stage B、Stage C 已完成；下一步进入 Stage D
 > 日期：2026-07-29
 > 主视角：状态所有权
 > 辅助视角：API 边界、失败语义与不必要复杂度
@@ -609,12 +609,47 @@ Stage B 的所有类型保持 `package` 可见性：
 
 ### Stage C：实现启动恢复与基础 CRUD
 
+完成于 2026-07-29：
+
 - async throwing initializer；
 - 目录扫描和 index 重建；
 - read / atomic write / remove / removeAll；
 - 同 Key 并发操作全部由串行 owner 排序；
 - 实现条件式 `@unchecked Sendable where Key: Sendable`；
 - 使用跨 actor 编译测试验证 Sendable 形状，不提前扩大公共协议要求。
+
+`LRUFileCache<Key>` 现在固定遵循 `AsyncCaching<Key, Data>`。stable key encoder
+在操作进入串行 owner 前生成 key material；worker 内只处理 SHA-256 文件名、
+resident metadata、LRU 顺序与文件 I/O。
+
+启动恢复会在任何删除前验证完整 inventory 与 marker。空目录通过受控
+`.latte-tmp-*` staging 发布 marker；如果首次发布在 rename 前中断，下一次启动
+只会在目录中唯一 artifact 是合法 marker staging 时完成接管。合法目录内遗留
+的 resident staging 会在完整分类后清理；清理失败则 fail closed。
+
+基础 CRUD 已冻结以下失败语义：
+
+- staging 写入或 publish 失败时清理候选，旧 resident 保持可读；
+- publish 已完成但最终 metadata 无法建立时删除正式文件并收敛为 miss；
+- resident 删除失败时保留内存 metadata，实例仍可继续使用；
+- 临时 artifact 清理失败时实例进入不可用状态；
+- `removeAll` 删除前重新验证完整 directory inventory，清理运行期新增的 resident
+  与 staging，并保留 ownership marker；
+- marker、未知名称或非普通目录项异常时 `removeAll` 零删除并使实例不可用；
+- hit 后 touch 失败仍返回 Data、刷新内存 LRU，并保留持久化时间以便后续重试；
+- 启动枚举后的 resident / staging 消失会被忽略，marker 消失仍 fail closed；
+- 同 key 混合并发与跨 actor 使用由测试覆盖。
+
+Stage C 尚未启用 maximum disk usage、水位回收或 TTL / TTI 失效；这些配置已经
+进入公共形状，但对应行为仍严格属于 Stage D。
+
+Stage C 验证结果：
+
+- macOS Debug、Release 与 Thread Sanitizer 下 48 个测试全部通过；
+- iOS Simulator、watchOS Simulator 与 Mac Catalyst 完整构建通过；
+- tvOS 16 与 visionOS 1 源码分别对已安装 SDK 完成 Swift 6 type-check；
+- 本机仍未安装 tvOS / visionOS 完整平台组件，因此没有对应 Xcode package
+  集成构建或运行时证据。
 
 ### Stage D：加入容量与 expiration
 
@@ -775,5 +810,5 @@ V1 不提前加入 event、callback、metrics snapshot 或 miss reason。Cache �
 10. `LRUFileCache` 条件式提供 `@unchecked Sendable where Key: Sendable`；
 11. V2 才加入观测。
 
-Stage 0 的持久化模型已经再次确认，Stage A 与 Stage B 已完成。下一实施边界是
-Stage C 的启动恢复与基础 CRUD，不提前加入容量水位和 expiration。
+Stage 0 的持久化模型已经再次确认，Stage A、Stage B 与 Stage C 已完成。下一
+实施边界是 Stage D 的 allocated-size 容量、水位回收和实例级 expiration。
