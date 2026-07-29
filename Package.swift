@@ -27,6 +27,14 @@ let package = Package(
             name: "PolicyHitRateBenchmark",
             targets: ["PolicyHitRateBenchmark"]
         ),
+        .executable(
+            name: "MemoryCacheBenchmark",
+            targets: ["MemoryCacheBenchmark"]
+        ),
+        .executable(
+            name: "FileCacheBenchmark",
+            targets: ["FileCacheBenchmark"]
+        ),
     ],
     targets: [
         .target(name: "Latte"),
@@ -34,6 +42,18 @@ let package = Package(
             name: "PolicyHitRateBenchmark",
             path: "Benchmarks/PolicyHitRateBenchmark",
             exclude: ["Data", "README.md"]
+        ),
+        .executableTarget(
+            name: "MemoryCacheBenchmark",
+            dependencies: ["Latte"],
+            path: "Benchmarks/MemoryCacheBenchmark",
+            exclude: ["README.md"]
+        ),
+        .executableTarget(
+            name: "FileCacheBenchmark",
+            dependencies: ["Latte"],
+            path: "Benchmarks/FileCacheBenchmark",
+            exclude: ["README.md"]
         ),
         .testTarget(
             name: "LatteTests",

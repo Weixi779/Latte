@@ -1,6 +1,6 @@
 # LRUFileCache V1 实施计划
 
-> 状态：Stage 0 至 Stage D 已完成；下一步进入 Stage E
+> 状态：Stage 0 至 Stage E 已完成
 > 日期：2026-07-29
 > 主视角：状态所有权
 > 辅助视角：API 边界、失败语义与不必要复杂度
@@ -690,6 +690,26 @@ Stage D 已完成：
 - benchmark 必须能够运行并说明测量对象；不把首次结果宣传成跨设备稳定结论，
   也不直接比较同步内存与异步文件 Cache 的裸吞吐。
 
+Stage E 已完成：
+
+- `MemoryCacheBenchmark` 使用 concrete `LRUMemoryCache`，分别测量 warm hit、
+  miss、overwrite、evicting insert、80/15/5 mixed workload 与 removeAll；
+- `FileCacheBenchmark` 使用真实目录与 awaited I/O，分别测量 warm hit / miss、
+  atomic overwrite、可配置 read/write、remove-insert、removeAll 与 cold rebuild；
+- File benchmark 打印目录根、volume format、local volume、Data size、resident
+  数量、key space、read/write ratio、touch interval 与 timed runs；
+- 两个 operation benchmark 使用独立 executable 与结果表，不产生 Memory /
+  File 裸吞吐排名；
+- benchmark 的 setup、prefill、reporting 与 cleanup 均排除在 timed region 之外；
+- Release smoke workload 已运行通过，不把 smoke 数值记录为性能结论；
+- README 已增加 `LRUFileCache` 构造与网络图片层的 Memory / File 注入示例；
+- README 注入形状由协议行为测试编译验证，完整测试数增加到 70；
+- macOS Debug、Release 与 Thread Sanitizer 下 70 个测试全部通过；
+- iOS 16、watchOS 9 与 Mac Catalyst 16 通用目标构建通过；
+- tvOS 16 与 visionOS 1 使用对应 SDK 完成 Swift 6 源码 type-check；本机未安装
+  两个平台的完整 Xcode 组件，因此不声明 package 集成构建或运行验证；
+- `DIRECTION.md` 已更新为 V1 实施完成。
+
 ## 8. 验证矩阵
 
 ### 8.1 协议与 CRUD
@@ -826,5 +846,5 @@ V1 不提前加入 event、callback、metrics snapshot 或 miss reason。Cache �
 10. `LRUFileCache` 条件式提供 `@unchecked Sendable where Key: Sendable`；
 11. V2 才加入观测。
 
-Stage 0 的持久化模型已经再次确认，Stage A、Stage B 与 Stage C 已完成。下一
-实施边界是 Stage D 的 allocated-size 容量、水位回收和实例级 expiration。
+Stage 0 的持久化模型已经再次确认，Stage A 至 Stage E 均已完成。后续新增
+observability、算法或介质时，必须按照 `DIRECTION.md` 的演进规则重新确认边界。

@@ -1,7 +1,7 @@
 # Latte：V1 方向与实施基线
 
-> 状态：实施中；公共协议、`LRUMemoryCache` 与 `LRUFileCache` Stage D 已完成，
-> 下一步进入交付文档与完整 Cache benchmark
+> 状态：V1 实施完成；公共协议、两个完整 Cache、测试、文档与 benchmark
+> 交付条件均已满足
 > 更新日期：2026-07-29
 
 ## 1. Latte 是什么
@@ -229,7 +229,8 @@ V1 不公开：
 
 当前 `LRUMemoryCache` 已经拥有真实 Value、公共 Cache API 与并发状态。
 `LRUFileCache` 已经拥有真实 `Data`、目录归属、串行 I/O、allocated-size
-高低水位、TTL / TTI 与重启恢复；完整 Cache operation benchmark 仍待补充。
+高低水位、TTL / TTI 与重启恢复。Memory 与 File operation benchmark 使用
+独立 executable 和结果表，避免把同步内存与异步文件 I/O 误作横向吞吐排名。
 
 ### 6.2 V1 结构
 
