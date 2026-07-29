@@ -2,7 +2,7 @@
 
 ## scope
 
-Latte 0.1.0 is a Swift 6 caching library for Apple platforms. It exposes two
+Latte 0.2.0 is a Swift 6 caching library for Apple platforms. It exposes two
 minimal behavior contracts and two complete cache implementations:
 
 | contract | implementation | execution model |
@@ -108,7 +108,7 @@ AsyncCaching<URL, Data>
 ```
 
 The consumer still owns networking, HTTP semantics, decoding, memory/file
-lookup order, and representation conversion. Latte 0.1.0 does not provide an
+lookup order, and representation conversion. Latte 0.2.0 does not provide an
 automatic memory-plus-file cache.
 
 ## package organization
@@ -135,7 +135,7 @@ dependencies, platform divergence, or independent module evolution.
 
 ## non-goals
 
-Latte 0.1.0 does not include:
+Latte 0.2.0 does not include:
 
 - per-entry expiration or background expiration sweeps;
 - production S3-FIFO, SIEVE, SLRU, TinyLFU, or W-TinyLFU caches;
@@ -166,5 +166,5 @@ inputs, not requirements.
 
 - Filesystem assumptions: [file metadata results](../probes/file-metadata/results.md)
 - Benchmark methodology: [benchmarks](../benchmarks/README.md)
-- Cache statistics design: [cache-statistics-plan.md](cache-statistics-plan.md)
+- Cache statistics: [cache-statistics.md](cache-statistics.md)
 - File cache design: [file-cache.md](file-cache.md)

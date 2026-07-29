@@ -9,9 +9,10 @@ Inspired by Caffeine, Moka, Ristretto, and cache2k, but not a port of them.
 Requires Swift 6 and iOS 16, macOS 13, Mac Catalyst 16, tvOS 16, watchOS 9,
 or visionOS 1.
 
-0.1.0 提供 `Caching`、`AsyncCaching` 两种最小缓存协议，以及
-`LRUMemoryCache`、`LRUFileCache` 两个完整实现。具体 Cache 可以拥有不同的
-cost、expiration、容量与持久化能力。
+0.2.0 提供 `Caching`、`AsyncCaching` 两种最小缓存协议，
+`LRUMemoryCache`、`LRUFileCache` 两个完整实现，以及可选的同步/异步
+statistics capability。具体 Cache 可以拥有不同的 cost、expiration、容量与
+持久化能力。
 
 ## installation
 
@@ -21,7 +22,7 @@ Add Latte to a Swift package:
 dependencies: [
     .package(
         url: "https://github.com/Weixi779/Latte.git",
-        from: "0.1.0"
+        from: "0.2.0"
     ),
 ]
 ```
@@ -148,7 +149,7 @@ struct NetworkImageCache<Image> {
 ## technical documentation
 
 - [Architecture](docs/architecture.md)
-- [Cache statistics](docs/cache-statistics-plan.md)
+- [Cache statistics](docs/cache-statistics.md)
 - [File cache](docs/file-cache.md)
 - [Filesystem evidence](probes/file-metadata/results.md)
 - [Benchmarks](benchmarks/README.md)
