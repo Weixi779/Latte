@@ -23,9 +23,18 @@ let package = Package(
             name: "Latte",
             targets: ["Latte"]
         ),
+        .executable(
+            name: "PolicyHitRateBenchmark",
+            targets: ["PolicyHitRateBenchmark"]
+        ),
     ],
     targets: [
         .target(name: "Latte"),
+        .executableTarget(
+            name: "PolicyHitRateBenchmark",
+            path: "Benchmarks/PolicyHitRateBenchmark",
+            exclude: ["Data", "README.md"]
+        ),
         .testTarget(
             name: "LatteTests",
             dependencies: ["Latte"]
