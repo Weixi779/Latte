@@ -87,6 +87,9 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
         /// `.zero` persists every successful access.
         public let accessTimeUpdateInterval: Duration
 
+        /// Whether this cache instance collects statistics.
+        public let isStatisticsEnabled: Bool
+
         public init(
             maximumDiskUsage: Int,
             lowWatermark: Double = 0.90,
@@ -95,12 +98,33 @@ public final class LRUFileCache<Key: Hashable>: AsyncCaching {
             timeToIdle: Duration? = nil,
             accessTimeUpdateInterval: Duration = .zero
         ) {
+            self.init(
+                maximumDiskUsage: maximumDiskUsage,
+                lowWatermark: lowWatermark,
+                highWatermark: highWatermark,
+                timeToLive: timeToLive,
+                timeToIdle: timeToIdle,
+                accessTimeUpdateInterval: accessTimeUpdateInterval,
+                isStatisticsEnabled: false
+            )
+        }
+
+        public init(
+            maximumDiskUsage: Int,
+            lowWatermark: Double = 0.90,
+            highWatermark: Double = 0.95,
+            timeToLive: Duration? = nil,
+            timeToIdle: Duration? = nil,
+            accessTimeUpdateInterval: Duration = .zero,
+            isStatisticsEnabled: Bool
+        ) {
             self.maximumDiskUsage = maximumDiskUsage
             self.lowWatermark = lowWatermark
             self.highWatermark = highWatermark
             self.timeToLive = timeToLive
             self.timeToIdle = timeToIdle
             self.accessTimeUpdateInterval = accessTimeUpdateInterval
+            self.isStatisticsEnabled = isStatisticsEnabled
         }
     }
 

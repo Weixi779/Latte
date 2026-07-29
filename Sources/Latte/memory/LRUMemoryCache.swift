@@ -26,14 +26,30 @@ public final class LRUMemoryCache<Key: Hashable, Value>: Caching {
         /// The maximum sum of the recorded costs of resident values.
         public let maximumCost: Int
 
+        /// Whether this cache instance collects statistics.
+        public let isStatisticsEnabled: Bool
+
         private let costCalculation: CostCalculation
 
         /// Creates a configuration that gives every value a cost of one,
         /// making `maximumCost` an entry-count bound.
         public init(maximumCost: Int) {
+            self.init(
+                maximumCost: maximumCost,
+                isStatisticsEnabled: false
+            )
+        }
+
+        /// Creates a configuration that gives every value a cost of one
+        /// and optionally collects statistics.
+        public init(
+            maximumCost: Int,
+            isStatisticsEnabled: Bool
+        ) {
             precondition(maximumCost >= 0, "Maximum cost must not be negative")
 
             self.maximumCost = maximumCost
+            self.isStatisticsEnabled = isStatisticsEnabled
             self.costCalculation = .unit
         }
 
@@ -42,9 +58,24 @@ public final class LRUMemoryCache<Key: Hashable, Value>: Caching {
             maximumCost: Int,
             weigher: @escaping Weigher
         ) {
+            self.init(
+                maximumCost: maximumCost,
+                isStatisticsEnabled: false,
+                weigher: weigher
+            )
+        }
+
+        /// Creates a configuration with a custom value weigher
+        /// and optionally collects statistics.
+        public init(
+            maximumCost: Int,
+            isStatisticsEnabled: Bool,
+            weigher: @escaping Weigher
+        ) {
             precondition(maximumCost >= 0, "Maximum cost must not be negative")
 
             self.maximumCost = maximumCost
+            self.isStatisticsEnabled = isStatisticsEnabled
             self.costCalculation = .custom(weigher)
         }
 
